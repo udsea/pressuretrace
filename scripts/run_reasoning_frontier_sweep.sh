@@ -10,6 +10,22 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+resolve_cache_root() {
+  local user_name="${USER:-$(id -un)}"
+  local candidate
+  for candidate in \
+    "/scratch/${user_name}/pressuretrace_cache" \
+    "/local_scratch/${user_name}/pressuretrace_cache" \
+    "/tmp/${user_name}/pressuretrace_cache"
+  do
+    mkdir -p "${candidate}" >/dev/null 2>&1 && {
+      echo "${candidate}"
+      return
+    }
+  done
+  echo "${PWD}/.pressuretrace_cache"
+}
+
 SPLIT="${SPLIT:-test}"
 LIMIT="${LIMIT:-50}"
 PRESSURE_TYPE="${PRESSURE_TYPE:-all}"
@@ -21,8 +37,15 @@ RUN_DIR="${RUN_DIR:-results/reasoning_frontier_sweep_${RUN_TAG}}"
 MANIFEST_PATH="${MANIFEST_PATH:-data/manifests/reasoning_frontier_sweep_${SPLIT}_${LIMIT}.jsonl}"
 TRANSFORMERS_VERBOSITY="${TRANSFORMERS_VERBOSITY:-error}"
 TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+CACHE_ROOT="${CACHE_ROOT:-$(resolve_cache_root)}"
+HF_HOME="${HF_HOME:-${CACHE_ROOT}/huggingface}"
+HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
+HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
+TMPDIR="${TMPDIR:-${CACHE_ROOT}/tmp}"
+HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-0}"
 
 mkdir -p "${RUN_DIR}"
+mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}" "${HF_XET_CACHE}" "${TMPDIR}"
 
 HIGH_END_MODELS=(
   "Qwen/Qwen3-32B"
@@ -81,12 +104,16 @@ MODEL_INDEX_FILE="${RUN_DIR}/models.tsv"
   echo "pressure_type=${PRESSURE_TYPE}"
   echo "model_group=${MODEL_GROUP}"
   echo "manifest_path=${MANIFEST_PATH}"
+  echo "cache_root=${CACHE_ROOT}"
+  echo "hf_home=${HF_HOME}"
   echo
 } > "${SUMMARY_FILE}"
 
 printf 'category\tmodel\tresults_path\tsummary_path\n' > "${MODEL_INDEX_FILE}"
 
 mapfile -t MODELS < <(build_model_list)
+
+printf 'HF cache directory: %s\n' "${HF_HOME}"
 
 for MODEL_NAME in "${MODELS[@]}"; do
   MODEL_CATEGORY="mid"
@@ -106,6 +133,11 @@ for MODEL_NAME in "${MODELS[@]}"; do
 
   TRANSFORMERS_VERBOSITY="${TRANSFORMERS_VERBOSITY}" \
   TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM}" \
+  HF_HOME="${HF_HOME}" \
+  HF_HUB_CACHE="${HF_HUB_CACHE}" \
+  HF_XET_CACHE="${HF_XET_CACHE}" \
+  HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET}" \
+  TMPDIR="${TMPDIR}" \
   uv run pressuretrace reasoning-pilot \
     --split "${SPLIT}" \
     --limit "${LIMIT}" \

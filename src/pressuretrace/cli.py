@@ -10,11 +10,13 @@ from rich.table import Table
 
 from pressuretrace.behavior.run_coding_benchmark import run_coding_pilot
 from pressuretrace.behavior.run_reasoning_benchmark import run_reasoning_pilot
+from pressuretrace.behavior.run_reasoning_benchmark_v2 import run_reasoning_pilot_v2
 from pressuretrace.behavior.summarize_behavior import print_behavior_summary
+from pressuretrace.behavior.summarize_behavior_v2 import print_behavior_summary_v2
 from pressuretrace.config import DEFAULT_MODELS, PRESSURE_PROFILES
 from pressuretrace.paths import data_dir, manifests_dir, repo_root, results_dir, splits_dir
 
-app = typer.Typer(help="PressureTrace v1 command-line interface.", no_args_is_help=True)
+app = typer.Typer(help="PressureTrace command-line interface.", no_args_is_help=True)
 console = Console()
 
 
@@ -78,6 +80,74 @@ def reasoning_pilot_command(
     console.print(f"Results: [bold]{artifacts.results_path}[/bold]")
     if not dry_run:
         print_behavior_summary(artifacts.results_path)
+
+
+@app.command("reasoning-pilot-v2")
+def reasoning_pilot_v2_command(
+    split: str = typer.Option("test", help="Dataset split to load."),
+    limit: int = typer.Option(
+        20,
+        min=1,
+        help="Maximum number of shortcut-clean GSM8K base tasks to retain.",
+    ),
+    model_name: str = typer.Option(
+        DEFAULT_MODELS.reasoning_model,
+        help="Model identifier recorded in output rows.",
+    ),
+    pressure_type: str = typer.Option(
+        "all",
+        help="Pressure type to run from the v2 manifest, or 'all' to run every pressure type.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit output JSONL path.",
+    ),
+    manifest_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--manifest-path",
+        help="Optional explicit manifest JSONL path.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run/--no-dry-run",
+        help="Build artifacts without running model inference.",
+    ),
+    include_control: bool = typer.Option(
+        True,
+        "--include-control/--pressure-only",
+        help="Include control episodes alongside pressure episodes.",
+    ),
+    thinking_mode: str = typer.Option(
+        "default",
+        "--thinking-mode",
+        help="Thinking mode for supported models: default, on, or off.",
+    ),
+    show_progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Show live manifest and inference progress while the pilot runs.",
+    ),
+) -> None:
+    """Run a reasoning v2 pilot."""
+
+    artifacts = run_reasoning_pilot_v2(
+        split=split,
+        limit=limit,
+        model_name=model_name,
+        pressure_type=pressure_type,
+        output_path=output_path,
+        manifest_path=manifest_path,
+        dry_run=dry_run,
+        include_control=include_control,
+        thinking_mode=thinking_mode,
+        console=console,
+        show_progress=show_progress,
+    )
+    console.print(f"Manifest: [bold]{artifacts.manifest_path}[/bold]")
+    console.print(f"Results: [bold]{artifacts.results_path}[/bold]")
+    if not dry_run:
+        print_behavior_summary_v2(artifacts.results_path)
 
 
 @app.command("coding-pilot")
@@ -153,6 +223,23 @@ def summarize_command(
     """Print aggregate route summaries for a result file."""
 
     print_behavior_summary(input_path)
+
+
+@app.command("summarize-v2")
+def summarize_v2_command(
+    input_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--input-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Reasoning v2 result JSONL file to summarize.",
+    ),
+) -> None:
+    """Print aggregate route summaries for a reasoning v2 result file."""
+
+    print_behavior_summary_v2(input_path)
 
 
 @app.command("print-paths")

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is required but was not found on PATH." >&2
+  echo "Install it with: bash scripts/install_uv.sh" >&2
+  exit 1
+fi
+
 uv sync --dev
 
 echo

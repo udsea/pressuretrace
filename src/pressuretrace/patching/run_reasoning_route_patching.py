@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -209,6 +210,22 @@ def _format_counter(counter: Counter[str], order: Sequence[str]) -> str:
     """Render counts in a stable order."""
 
     return ", ".join(f"{key}={counter.get(key, 0)}" for key in order)
+
+
+def _summarize_model_devices(model: Any) -> str:
+    """Render a compact summary of where the model layers live."""
+
+    if hasattr(model, "hf_device_map"):
+        device_counts: Counter[str] = Counter(
+            str(device) for device in model.hf_device_map.values()
+        )
+        return ", ".join(
+            f"{device}={count}" for device, count in sorted(device_counts.items())
+        )
+    try:
+        return str(next(model.parameters()).device)
+    except StopIteration:  # pragma: no cover - defensive fallback
+        return "unknown"
 
 
 def select_eligible_patch_pairs(
@@ -428,6 +445,7 @@ def _write_summary_text(
 def run_reasoning_route_patching(config: RoutePatchingConfig) -> RoutePatchingArtifacts:
     """Run the first logit-level route-patching sweep on frozen reasoning pairs."""
 
+    started_at = time.perf_counter()
     pairs = load_reasoning_patch_pairs(
         patch_pairs_path=config.patch_pairs_path,
         manifest_path=config.manifest_path,
@@ -448,10 +466,13 @@ def run_reasoning_route_patching(config: RoutePatchingConfig) -> RoutePatchingAr
     print("Per-pressure counts: " + _format_counter(pressure_counts, config.pressure_types))
     print(f"Skipped for tokenization: {skipped_tokenization}")
     print("Layers tested: " + ", ".join(str(layer) for layer in config.layers))
+    print("Model device placement: " + _summarize_model_devices(bundle.model))
 
     prepare_results_file(config.output_path)
     written_rows: list[dict[str, Any]] = []
-    for eligible_pair in eligible_pairs:
+    total_pairs = len(eligible_pairs)
+    for index, eligible_pair in enumerate(eligible_pairs, start=1):
+        pair_started_at = time.perf_counter()
         pair_rows = _run_pair_layer_patches(
             bundle,
             eligible_pair,
@@ -460,6 +481,14 @@ def run_reasoning_route_patching(config: RoutePatchingConfig) -> RoutePatchingAr
         written_rows.extend(pair_rows)
         for row in pair_rows:
             append_jsonl(config.output_path, row)
+        elapsed = time.perf_counter() - pair_started_at
+        total_elapsed = time.perf_counter() - started_at
+        print(
+            f"[{index}/{total_pairs}] {eligible_pair.pair.base_task_id} "
+            f"{eligible_pair.pair.pressure_type} "
+            f"wrote {len(pair_rows)} rows in {elapsed:.1f}s "
+            f"(total {total_elapsed / 60:.1f}m)"
+        )
 
     summary_rows = aggregate_patch_rows(written_rows)
     write_summary_csv(summary_rows, config.summary_csv_path)
@@ -495,6 +524,7 @@ def run_reasoning_route_patching(config: RoutePatchingConfig) -> RoutePatchingAr
     print(f"Results: {config.output_path}")
     print(f"Summary TXT: {config.summary_txt_path}")
     print(f"Summary CSV: {config.summary_csv_path}")
+    print(f"Elapsed: {(time.perf_counter() - started_at) / 60:.1f}m")
 
     return RoutePatchingArtifacts(
         output_path=config.output_path,

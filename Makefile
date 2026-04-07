@@ -1,4 +1,4 @@
-.PHONY: install sync fmt lint test run-reasoning-pilot run-coding-pilot run-reasoning-frontier-sweep
+.PHONY: install sync fmt lint test run-reasoning-pilot run-coding-pilot run-reasoning-frontier-sweep run-reasoning-5090-sweep
 
 install:
 	uv sync --dev
@@ -21,6 +21,9 @@ run-reasoning-pilot:
 
 run-reasoning-frontier-sweep:
 	bash scripts/run_reasoning_frontier_sweep.sh
+
+run-reasoning-5090-sweep:
+	bash scripts/run_reasoning_5090_sweep.sh
 
 run-coding-pilot:
 	uv run pressuretrace coding-pilot --limit-per-dataset 5 --split test --dry-run

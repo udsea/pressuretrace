@@ -1,4 +1,4 @@
-.PHONY: install sync fmt lint test run-reasoning-pilot run-coding-pilot run-reasoning-frontier-sweep run-reasoning-5090-sweep run-reasoning-pilot-v2 run-reasoning-thinking-ablation-v2
+.PHONY: install sync fmt lint test run-reasoning-pilot run-coding-pilot run-reasoning-frontier-sweep run-reasoning-frontier-sweep-v2 run-reasoning-5090-sweep run-reasoning-pilot-v2 run-reasoning-thinking-ablation-v2
 
 install:
 	uv sync --dev
@@ -24,6 +24,9 @@ run-reasoning-pilot-v2:
 
 run-reasoning-frontier-sweep:
 	bash scripts/run_reasoning_frontier_sweep.sh
+
+run-reasoning-frontier-sweep-v2:
+	bash scripts/run_reasoning_frontier_sweep_v2.sh
 
 run-reasoning-5090-sweep:
 	bash scripts/run_reasoning_5090_sweep.sh

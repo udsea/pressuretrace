@@ -1,0 +1,4 @@
+interface:
+  display_name: "Org Code Standards"
+  short_description: "Shared engineering consistency rules"
+  default_prompt: "Use $org-code-standards to keep this change aligned with repo and org conventions."

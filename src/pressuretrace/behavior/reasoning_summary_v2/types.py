@@ -41,3 +41,17 @@ class PairedRouteShiftAggregateV2:
     control_wrong_nonshortcut_to_pressure_shortcut: int
     control_correct_to_pressure_wrong_nonshortcut: int
     control_shortcut_to_pressure_shortcut: int
+
+
+@dataclass(frozen=True)
+class ControlRobustSliceAggregateV2:
+    """Pressure outcomes restricted to base tasks with robust control performance."""
+
+    thinking_mode: str
+    pressure_type: str
+    total: int
+    robust_rate: float
+    shortcut_followed_rate: float
+    wrong_nonshortcut_rate: float
+    parse_failed_rate: float
+    parse_ambiguous_rate: float

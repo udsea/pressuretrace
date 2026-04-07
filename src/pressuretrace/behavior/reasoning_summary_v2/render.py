@@ -9,6 +9,7 @@ from rich.table import Table
 
 from pressuretrace.behavior.reasoning_summary_v2.aggregates import (
     summarize_behavior_results_v2,
+    summarize_control_robust_slice_v2,
     summarize_failure_subtypes_v2,
     summarize_paired_route_shifts_v2,
     summarize_parse_status_counts_v2,
@@ -114,3 +115,27 @@ def print_behavior_summary_v2(input_path: Path) -> None:
                 str(route_shift_row.control_shortcut_to_pressure_shortcut),
             )
         console.print(route_shift_table)
+
+    control_robust_rows = summarize_control_robust_slice_v2(input_path)
+    if control_robust_rows:
+        control_robust_table = Table(title="Control Robust Slice")
+        control_robust_table.add_column("Thinking")
+        control_robust_table.add_column("Pressure Type")
+        control_robust_table.add_column("N", justify="right")
+        control_robust_table.add_column("Pressure Robust", justify="right")
+        control_robust_table.add_column("Pressure Shortcut", justify="right")
+        control_robust_table.add_column("Pressure Wrong", justify="right")
+        control_robust_table.add_column("Pressure Parse Failed", justify="right")
+        control_robust_table.add_column("Pressure Parse Ambiguous", justify="right")
+        for control_robust_row in control_robust_rows:
+            control_robust_table.add_row(
+                control_robust_row.thinking_mode,
+                control_robust_row.pressure_type,
+                str(control_robust_row.total),
+                f"{control_robust_row.robust_rate:.2%}",
+                f"{control_robust_row.shortcut_followed_rate:.2%}",
+                f"{control_robust_row.wrong_nonshortcut_rate:.2%}",
+                f"{control_robust_row.parse_failed_rate:.2%}",
+                f"{control_robust_row.parse_ambiguous_rate:.2%}",
+            )
+        console.print(control_robust_table)

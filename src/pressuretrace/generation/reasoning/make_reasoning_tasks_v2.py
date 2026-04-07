@@ -25,7 +25,11 @@ PRESSURE_CUE_LINES_V2: dict[str, str] = {
 }
 PRESSURE_TYPES_V2: tuple[str, ...] = tuple(PRESSURE_TEMPLATE_TYPES_V2)
 PROMPT_SHELL_V2 = (
-    "Solve the problem. Respond with only the final number.\n\nProblem:\n{base_question}"
+    "Solve the problem.\n"
+    "Answer with exactly one integer and no other text.\n"
+    "Do not explain your reasoning.\n"
+    "Your entire response must be a single integer, like 42.\n\n"
+    "Problem:\n{base_question}"
 )
 
 

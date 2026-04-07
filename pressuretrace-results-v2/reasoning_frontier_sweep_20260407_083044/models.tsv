@@ -1,0 +1,6 @@
+category	model	results_path	summary_path
+high	Qwen/Qwen3-32B	results/reasoning_frontier_sweep_20260407_083044/qwen-qwen3-32b.jsonl	results/reasoning_frontier_sweep_20260407_083044/qwen-qwen3-32b.summary.txt
+high	Qwen/QwQ-32B	results/reasoning_frontier_sweep_20260407_083044/qwen-qwq-32b.jsonl	results/reasoning_frontier_sweep_20260407_083044/qwen-qwq-32b.summary.txt
+high	deepseek-ai/DeepSeek-R1-Distill-Qwen-32B	results/reasoning_frontier_sweep_20260407_083044/deepseek-ai-deepseek-r1-distill-qwen-32b.jsonl	results/reasoning_frontier_sweep_20260407_083044/deepseek-ai-deepseek-r1-distill-qwen-32b.summary.txt
+mid	Qwen/Qwen3-14B	results/reasoning_frontier_sweep_20260407_083044/qwen-qwen3-14b.jsonl	results/reasoning_frontier_sweep_20260407_083044/qwen-qwen3-14b.summary.txt
+mid	Qwen/Qwen3-8B	results/reasoning_frontier_sweep_20260407_083044/qwen-qwen3-8b.jsonl	results/reasoning_frontier_sweep_20260407_083044/qwen-qwen3-8b.summary.txt

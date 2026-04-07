@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repo Intake"
+  short_description: "Orient quickly in unfamiliar repositories"
+  default_prompt: "Use $repo-intake to map this repository and narrow the change surface before editing."

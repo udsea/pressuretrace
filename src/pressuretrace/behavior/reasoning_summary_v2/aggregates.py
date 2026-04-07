@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pressuretrace.behavior.reasoning_summary_v2.types import (
     BehaviorAggregateV2,
+    ControlRobustSliceAggregateV2,
     CountAggregateV2,
     PairedRouteShiftAggregateV2,
 )
@@ -201,6 +202,76 @@ def summarize_paired_route_shifts_v2(input_path: Path) -> list[PairedRouteShiftA
                 control_wrong_nonshortcut_to_pressure_shortcut=control_wrong_to_pressure_shortcut,
                 control_correct_to_pressure_wrong_nonshortcut=control_correct_to_pressure_wrong,
                 control_shortcut_to_pressure_shortcut=control_shortcut_to_pressure_shortcut,
+            )
+        )
+    return aggregates
+
+
+def summarize_control_robust_slice_v2(input_path: Path) -> list[ControlRobustSliceAggregateV2]:
+    """Summarize pressure outcomes on base tasks with robust control routes."""
+
+    rows = read_jsonl(input_path)
+    control_routes: dict[tuple[str, str], str] = {}
+    grouped: Counter[tuple[str, str, str]] = Counter()
+    totals: Counter[tuple[str, str]] = Counter()
+
+    for row in rows:
+        metadata = row.get("metadata", {})
+        base_task_id = metadata.get("base_task_id")
+        if base_task_id is None:
+            continue
+        thinking_mode = str(row.get("thinking_mode", "default"))
+        pressure_type = str(row.get("pressure_type", "unknown"))
+        route_label = str(row.get("route_label", "unknown"))
+        base_key = (thinking_mode, str(base_task_id))
+        if pressure_type == "control":
+            control_routes[base_key] = route_label
+
+    for row in rows:
+        metadata = row.get("metadata", {})
+        base_task_id = metadata.get("base_task_id")
+        if base_task_id is None:
+            continue
+        thinking_mode = str(row.get("thinking_mode", "default"))
+        pressure_type = str(row.get("pressure_type", "unknown"))
+        if pressure_type == "control":
+            continue
+        if control_routes.get((thinking_mode, str(base_task_id))) != "robust_correct":
+            continue
+
+        route_label = str(row.get("route_label", "unknown"))
+        group_key = (pressure_type, thinking_mode)
+        grouped[(pressure_type, thinking_mode, route_label)] += 1
+        totals[group_key] += 1
+
+    aggregates: list[ControlRobustSliceAggregateV2] = []
+    for pressure_type, thinking_mode in _ordered_group_keys(set(totals)):
+        total = totals[(pressure_type, thinking_mode)]
+        aggregates.append(
+            ControlRobustSliceAggregateV2(
+                thinking_mode=thinking_mode,
+                pressure_type=pressure_type,
+                total=total,
+                robust_rate=safe_divide(
+                    grouped[(pressure_type, thinking_mode, "robust_correct")],
+                    total,
+                ),
+                shortcut_followed_rate=safe_divide(
+                    grouped[(pressure_type, thinking_mode, "shortcut_followed")],
+                    total,
+                ),
+                wrong_nonshortcut_rate=safe_divide(
+                    grouped[(pressure_type, thinking_mode, "wrong_nonshortcut")],
+                    total,
+                ),
+                parse_failed_rate=safe_divide(
+                    grouped[(pressure_type, thinking_mode, "parse_failed")],
+                    total,
+                ),
+                parse_ambiguous_rate=safe_divide(
+                    grouped[(pressure_type, thinking_mode, "parse_ambiguous")],
+                    total,
+                ),
             )
         )
     return aggregates

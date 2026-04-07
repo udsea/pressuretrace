@@ -1,0 +1,4 @@
+interface:
+  display_name: "Change Validation"
+  short_description: "Validate changes before calling work done"
+  default_prompt: "Use $change-validation to choose the right checks and report what was verified."

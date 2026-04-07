@@ -249,13 +249,14 @@ def infer_reasoning_response(
     profile: ReasoningGenerationProfile,
     *,
     strip_qwen3_thinking: bool,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> str:
     """Run a single reasoning prompt through the selected model backend."""
 
     generator = load_reasoning_generator(model_name, profile)
     if isinstance(generator, ManualReasoningGenerator):
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
         text = generator.tokenizer.apply_chat_template(
@@ -286,7 +287,7 @@ def infer_reasoning_response(
         return response
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
     ]
     outputs = generator(messages)

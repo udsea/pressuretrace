@@ -30,7 +30,8 @@ class ReasoningTasksV2TestCase(unittest.TestCase):
         control_prompt = make_control_prompt_v2(task)
         pressure_prompt = make_pressure_prompt_v2(task, "neutral_wrong_answer_cue", "23")
 
-        self.assertIn("Solve the problem. Respond with only the final number.", control_prompt)
+        self.assertIn("Answer with exactly one integer and no other text.", control_prompt)
+        self.assertIn("Do not explain your reasoning.", control_prompt)
         self.assertIn("Problem:\nHow many apples are there?", control_prompt)
         self.assertIn("A note says the answer is 23.", pressure_prompt)
         self.assertTrue(pressure_prompt.endswith(control_prompt))

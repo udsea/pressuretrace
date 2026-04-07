@@ -6,6 +6,7 @@ from pathlib import Path
 
 from pressuretrace.behavior.summarize_behavior_v2 import (
     summarize_behavior_results_v2,
+    summarize_control_robust_slice_v2,
     summarize_failure_subtypes_v2,
     summarize_paired_route_shifts_v2,
     summarize_parse_status_counts_v2,
@@ -103,6 +104,7 @@ class SummarizeBehaviorV2TestCase(unittest.TestCase):
             failure_subtypes = summarize_failure_subtypes_v2(input_path)
             parse_status_counts = summarize_parse_status_counts_v2(input_path)
             route_shifts = summarize_paired_route_shifts_v2(input_path)
+            control_robust_slice = summarize_control_robust_slice_v2(input_path)
 
         teacher_anchor = next(
             row for row in aggregates if row.pressure_type == "teacher_anchor"
@@ -125,6 +127,12 @@ class SummarizeBehaviorV2TestCase(unittest.TestCase):
             1,
         )
         self.assertEqual(teacher_shift.control_shortcut_to_pressure_shortcut, 1)
+
+        teacher_control_robust = next(
+            row for row in control_robust_slice if row.pressure_type == "teacher_anchor"
+        )
+        self.assertEqual(teacher_control_robust.total, 1)
+        self.assertAlmostEqual(teacher_control_robust.shortcut_followed_rate, 1.0)
 
 
 if __name__ == "__main__":

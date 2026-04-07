@@ -48,9 +48,15 @@ from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
 from pressuretrace.utils.io import append_jsonl
 
 VALID_THINKING_MODES: tuple[ThinkingMode, ...] = ("default", "on", "off")
+STRICT_INTEGER_SYSTEM_PROMPT = (
+    "You solve grade-school math word problems. "
+    "Answer with exactly one integer and no other text. "
+    "Do not explain your reasoning. "
+    "Your entire response must be a single integer, like 42."
+)
 
 REASONING_MAX_NEW_TOKENS = 64
-QWEN3_MAX_NEW_TOKENS = 256
+QWEN3_MAX_NEW_TOKENS = 96
 
 
 @dataclass(frozen=True)
@@ -142,6 +148,7 @@ def infer_reasoning_model_v2(
         model_name=model_name,
         profile=_generation_profile_for_model_v2(model_name, thinking_mode),
         strip_qwen3_thinking=False,
+        system_prompt=STRICT_INTEGER_SYSTEM_PROMPT,
     )
 
 

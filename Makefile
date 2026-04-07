@@ -1,0 +1,23 @@
+.PHONY: install sync fmt lint test run-reasoning-pilot run-coding-pilot
+
+install:
+	uv sync --dev
+
+sync:
+	uv sync --dev
+
+fmt:
+	uv run ruff format src tests
+
+lint:
+	uv run ruff check src tests
+	uv run mypy src
+
+test:
+	PYTHONPATH=src uv run python -m unittest discover -s tests -p 'test_*.py'
+
+run-reasoning-pilot:
+	uv run pressuretrace reasoning-pilot --limit 10 --split test --dry-run
+
+run-coding-pilot:
+	uv run pressuretrace coding-pilot --limit-per-dataset 5 --split test --dry-run

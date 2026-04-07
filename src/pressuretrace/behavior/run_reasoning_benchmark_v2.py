@@ -152,46 +152,26 @@ def infer_reasoning_model_v2(
     )
 
 
-def run_reasoning_pilot_v2(
-    split: str = "test",
-    limit: int = 20,
-    model_name: str = DEFAULT_MODELS.reasoning_model,
-    pressure_type: str = "all",
-    output_path: Path | None = None,
-    manifest_path: Path | None = None,
-    dry_run: bool = False,
-    include_control: bool = True,
-    thinking_mode: str = "default",
-    console: Console | None = None,
-    show_progress: bool = False,
+def _run_reasoning_manifest_rows_v2(
+    manifest_destination: Path,
+    manifest_rows: list[dict[str, Any]],
+    model_name: str,
+    pressure_type: str,
+    output_path: Path | None,
+    dry_run: bool,
+    validated_thinking_mode: ThinkingMode,
+    console: Console | None,
+    show_progress: bool,
 ) -> ReasoningPilotArtifactsV2:
-    """Build a paired v2 manifest, run a model, and write result rows."""
+    """Run inference over an already selected set of reasoning v2 manifest rows."""
 
-    validated_thinking_mode = _validate_thinking_mode(thinking_mode)
-    if show_progress and console is not None:
-        console.rule("PressureTrace Reasoning V2 Pilot")
-        console.print(f"Split: [bold]{split}[/bold]")
-        console.print(f"Target retained base tasks: [bold]{limit}[/bold]")
-        console.print(f"Model: [bold]{model_name}[/bold]")
-        console.print(f"Requested pressure type: [bold]{pressure_type}[/bold]")
-        console.print(f"Thinking mode: [bold]{validated_thinking_mode}[/bold]")
-        console.print(f"Include control: [bold]{include_control}[/bold]")
-        console.print("[bold]Step 1/3[/bold] Building paired reasoning v2 manifest from GSM8K.")
-
-    manifest_destination = build_reasoning_manifest_v2(
-        split=split,
-        limit=limit,
-        output_path=manifest_path,
-    )
-    manifest_rows = _filter_manifest_rows(
-        rows=load_reasoning_manifest_v2(manifest_destination),
-        pressure_type=pressure_type,
-        include_control=include_control,
+    manifest_split = (
+        str(manifest_rows[0]["metadata"].get("split", "test")) if manifest_rows else "test"
     )
     results_path = _prepare_results_file(
         output_path
         or _default_output_path(
-            split=split,
+            split=manifest_split,
             pressure_type=pressure_type,
             thinking_mode=validated_thinking_mode,
             model_name=model_name,
@@ -341,4 +321,94 @@ def run_reasoning_pilot_v2(
         row_count=row_count,
         pressure_type=pressure_type,
         thinking_mode=validated_thinking_mode,
+    )
+
+
+def run_reasoning_manifest_v2(
+    manifest_path: Path,
+    model_name: str = DEFAULT_MODELS.reasoning_model,
+    pressure_type: str = "all",
+    output_path: Path | None = None,
+    dry_run: bool = False,
+    include_control: bool = True,
+    thinking_mode: str = "default",
+    console: Console | None = None,
+    show_progress: bool = False,
+) -> ReasoningPilotArtifactsV2:
+    """Run reasoning v2 inference from a prebuilt manifest."""
+
+    validated_thinking_mode = _validate_thinking_mode(thinking_mode)
+    manifest_rows = _filter_manifest_rows(
+        rows=load_reasoning_manifest_v2(manifest_path),
+        pressure_type=pressure_type,
+        include_control=include_control,
+    )
+    if show_progress and console is not None:
+        console.rule("PressureTrace Reasoning V2 Manifest Run")
+        console.print(f"Manifest: [bold]{manifest_path}[/bold]")
+        console.print(f"Model: [bold]{model_name}[/bold]")
+        console.print(f"Requested pressure type: [bold]{pressure_type}[/bold]")
+        console.print(f"Thinking mode: [bold]{validated_thinking_mode}[/bold]")
+        console.print(f"Include control: [bold]{include_control}[/bold]")
+        console.print("[bold]Step 1/2[/bold] Loaded frozen reasoning v2 manifest.")
+
+    return _run_reasoning_manifest_rows_v2(
+        manifest_destination=manifest_path,
+        manifest_rows=manifest_rows,
+        model_name=model_name,
+        pressure_type=pressure_type,
+        output_path=output_path,
+        dry_run=dry_run,
+        validated_thinking_mode=validated_thinking_mode,
+        console=console,
+        show_progress=show_progress,
+    )
+
+
+def run_reasoning_pilot_v2(
+    split: str = "test",
+    limit: int = 20,
+    model_name: str = DEFAULT_MODELS.reasoning_model,
+    pressure_type: str = "all",
+    output_path: Path | None = None,
+    manifest_path: Path | None = None,
+    dry_run: bool = False,
+    include_control: bool = True,
+    thinking_mode: str = "default",
+    console: Console | None = None,
+    show_progress: bool = False,
+) -> ReasoningPilotArtifactsV2:
+    """Build a paired v2 manifest, run a model, and write result rows."""
+
+    validated_thinking_mode = _validate_thinking_mode(thinking_mode)
+    if show_progress and console is not None:
+        console.rule("PressureTrace Reasoning V2 Pilot")
+        console.print(f"Split: [bold]{split}[/bold]")
+        console.print(f"Target retained base tasks: [bold]{limit}[/bold]")
+        console.print(f"Model: [bold]{model_name}[/bold]")
+        console.print(f"Requested pressure type: [bold]{pressure_type}[/bold]")
+        console.print(f"Thinking mode: [bold]{validated_thinking_mode}[/bold]")
+        console.print(f"Include control: [bold]{include_control}[/bold]")
+        console.print("[bold]Step 1/3[/bold] Building paired reasoning v2 manifest from GSM8K.")
+
+    manifest_destination = build_reasoning_manifest_v2(
+        split=split,
+        limit=limit,
+        output_path=manifest_path,
+    )
+    manifest_rows = _filter_manifest_rows(
+        rows=load_reasoning_manifest_v2(manifest_destination),
+        pressure_type=pressure_type,
+        include_control=include_control,
+    )
+    return _run_reasoning_manifest_rows_v2(
+        manifest_destination=manifest_destination,
+        manifest_rows=manifest_rows,
+        model_name=model_name,
+        pressure_type=pressure_type,
+        output_path=output_path,
+        dry_run=dry_run,
+        validated_thinking_mode=validated_thinking_mode,
+        console=console,
+        show_progress=show_progress,
     )

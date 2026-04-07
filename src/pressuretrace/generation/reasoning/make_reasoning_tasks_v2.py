@@ -176,3 +176,18 @@ def build_reasoning_manifest_v2(
     print(f"Retention rate: {retention_rate:.3f}")
 
     return write_jsonl(destination, manifest_rows)
+
+
+def build_reasoning_all_valid_transforms_v2(
+    split: str = "test",
+    limit: int | None = None,
+    output_path: Path | None = None,
+) -> Path:
+    """Build the full valid reasoning transform pool under the frozen v2 setup."""
+
+    destination = output_path or manifests_dir() / "reasoning_all_valid_transforms.jsonl"
+    return build_reasoning_manifest_v2(
+        split=split,
+        limit=limit,
+        output_path=destination,
+    )

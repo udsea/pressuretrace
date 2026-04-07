@@ -13,6 +13,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pressuretrace.behavior.reasoning_runtime import (
     STRICT_INTEGER_SYSTEM_PROMPT,
+    build_reasoning_messages,
+    is_qwen3_model,
     manual_model_load_kwargs,
     model_input_device,
 )
@@ -60,15 +62,6 @@ def default_reasoning_probe_extraction_config() -> ReasoningProbeExtractionConfi
 def _validate_config(config: ReasoningProbeExtractionConfig) -> None:
     """Reject unsupported extraction settings early."""
 
-    if config.model_name != REASONING_V2_MODEL_NAME:
-        raise ValueError(
-            f"Reasoning probe extraction is only supported for {REASONING_V2_MODEL_NAME}."
-        )
-    if config.thinking_mode != REASONING_V2_THINKING_MODE:
-        raise ValueError(
-            "Reasoning probe extraction is only supported for "
-            f"thinking_mode={REASONING_V2_THINKING_MODE!r}."
-        )
     unsupported_layers = set(config.layers) - set(REASONING_PROBE_LAYERS)
     if unsupported_layers:
         available = ", ".join(str(layer) for layer in REASONING_PROBE_LAYERS)
@@ -85,18 +78,26 @@ def _validate_config(config: ReasoningProbeExtractionConfig) -> None:
         )
 
 
-def _build_chat_prompt(tokenizer: Any, prompt: str) -> str:
-    """Reconstruct the exact Qwen3 chat prompt used during the frozen run."""
+def _build_chat_prompt(
+    tokenizer: Any,
+    prompt: str,
+    model_name: str,
+    thinking_mode: str,
+) -> str:
+    """Reconstruct the exact chat prompt used during the frozen run."""
 
-    messages = [
-        {"role": "system", "content": STRICT_INTEGER_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages = build_reasoning_messages(prompt, STRICT_INTEGER_SYSTEM_PROMPT)
+    if is_qwen3_model(model_name):
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=thinking_mode in {"default", "on"},
+        )
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False,
     )
 
 
@@ -121,7 +122,12 @@ def _select_prompt(manifest_row: dict[str, Any], result_row: dict[str, Any]) -> 
     return manifest_prompt or result_prompt
 
 
-def _row_is_eligible(result_row: dict[str, Any]) -> bool:
+def _row_is_eligible(
+    result_row: dict[str, Any],
+    *,
+    model_name: str,
+    thinking_mode: str,
+) -> bool:
     """Return whether a frozen result row should be probed."""
 
     if str(result_row.get("family")) != REASONING_PROBE_FAMILY:
@@ -130,9 +136,9 @@ def _row_is_eligible(result_row: dict[str, Any]) -> bool:
         return False
     if str(result_row.get("route_label")) not in ELIGIBLE_ROUTE_LABELS:
         return False
-    if str(result_row.get("model_name")) != REASONING_V2_MODEL_NAME:
+    if str(result_row.get("model_name")) != model_name:
         return False
-    if str(result_row.get("thinking_mode")) != REASONING_V2_THINKING_MODE:
+    if str(result_row.get("thinking_mode")) != thinking_mode:
         return False
     return True
 
@@ -140,6 +146,9 @@ def _row_is_eligible(result_row: dict[str, Any]) -> bool:
 def select_reasoning_probe_rows(
     manifest_rows: Sequence[dict[str, Any]],
     result_rows: Sequence[dict[str, Any]],
+    *,
+    model_name: str = REASONING_V2_MODEL_NAME,
+    thinking_mode: str = REASONING_V2_THINKING_MODE,
 ) -> list[dict[str, Any]]:
     """Join manifest and results rows, keeping only probe-eligible pressure rows."""
 
@@ -148,7 +157,11 @@ def select_reasoning_probe_rows(
     missing_manifest_task_ids: list[str] = []
 
     for result_row in result_rows:
-        if not _row_is_eligible(result_row):
+        if not _row_is_eligible(
+            result_row,
+            model_name=model_name,
+            thinking_mode=thinking_mode,
+        ):
             continue
         task_id = str(result_row.get("task_id"))
         manifest_row = manifest_by_task_id.get(task_id)
@@ -229,7 +242,12 @@ def extract_reasoning_hidden_states(
     _validate_config(config)
     manifest_rows = [dict(row) for row in read_jsonl(config.manifest_path)]
     result_rows = [dict(row) for row in read_jsonl(config.results_path)]
-    selected_rows = select_reasoning_probe_rows(manifest_rows, result_rows)
+    selected_rows = select_reasoning_probe_rows(
+        manifest_rows,
+        result_rows,
+        model_name=config.model_name,
+        thinking_mode=config.thinking_mode,
+    )
     if not selected_rows:
         raise ValueError("No eligible reasoning rows were found for hidden-state extraction.")
 
@@ -245,7 +263,12 @@ def extract_reasoning_hidden_states(
     rows_written = 0
     with torch.no_grad():
         for row in selected_rows:
-            prompt_text = _build_chat_prompt(tokenizer, str(row["prompt"]))
+            prompt_text = _build_chat_prompt(
+                tokenizer=tokenizer,
+                prompt=str(row["prompt"]),
+                model_name=config.model_name,
+                thinking_mode=config.thinking_mode,
+            )
             model_inputs = tokenizer([prompt_text], return_tensors="pt")
             input_device = model_input_device(model)
             model_inputs = {name: tensor.to(input_device) for name, tensor in model_inputs.items()}
@@ -293,7 +316,7 @@ def extract_reasoning_hidden_states(
                         "hidden_state": _flatten_hidden_state(projected),
                         "metadata": {
                             **dict(row.get("metadata", {})),
-                            "thinking_mode": row.get("thinking_mode", REASONING_V2_THINKING_MODE),
+                            "thinking_mode": row.get("thinking_mode", config.thinking_mode),
                             "prompt_token_count": int(model_inputs["input_ids"].shape[-1]),
                             "extractor": "reasoning_hidden_states",
                             "layer": layer,

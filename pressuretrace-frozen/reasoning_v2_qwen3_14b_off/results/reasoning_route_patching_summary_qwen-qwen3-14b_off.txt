@@ -1,0 +1,41 @@
+PressureTrace reasoning route patching summary
+
+Frozen root: /home/ubuntu/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off
+Manifest: /home/ubuntu/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/data/manifests/reasoning_paper_slice_qwen-qwen3-14b_off.jsonl
+Results: /home/ubuntu/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_paper_slice_qwen-qwen3-14b_off.jsonl
+Patch pairs: /home/ubuntu/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_patch_pairs_qwen-qwen3-14b_off.jsonl
+Model: Qwen/Qwen3-14B
+Thinking mode: off
+First-pass design: prompt-only logit-level patching over the final prompt token; rescue and induction directions; no generation.
+Filters: pressure_type in ('neutral_wrong_answer_cue', 'teacher_anchor'); control=robust_correct; pressure=shortcut_followed; gold and shortcut answers must each tokenize to exactly one token.
+Pairs loaded: 272
+Retained single-token pairs: 26
+Skipped for tokenization: 246
+Rows written: 156
+
+Grouped by pressure_type, layer, direction.
+
+pressure_type | layer | direction | n_pairs | mean_delta_gold_prob | mean_delta_shortcut_prob | mean_delta_margin | top1_changed_rate
+neutral_wrong_answer_cue | -10 | induction | 14 | -0.4398 | 0.6475 | -9.3214 | 0.6429
+neutral_wrong_answer_cue | -10 | rescue | 14 | 0.5811 | -0.8850 | 12.8125 | 0.9286
+neutral_wrong_answer_cue | -8 | induction | 14 | -0.4706 | 0.6696 | -9.7679 | 0.6429
+neutral_wrong_answer_cue | -8 | rescue | 14 | 0.5734 | -0.8759 | 12.8750 | 0.9286
+neutral_wrong_answer_cue | -6 | induction | 14 | -0.5774 | 0.8830 | -13.8214 | 0.8571
+neutral_wrong_answer_cue | -6 | rescue | 14 | 0.6102 | -0.9140 | 13.9821 | 0.9286
+teacher_anchor | -10 | induction | 12 | -0.4029 | 0.5239 | -7.2500 | 0.5833
+teacher_anchor | -10 | rescue | 12 | 0.5124 | -0.8346 | 9.8333 | 0.9167
+teacher_anchor | -8 | induction | 12 | -0.4255 | 0.5563 | -7.7917 | 0.6667
+teacher_anchor | -8 | rescue | 12 | 0.5073 | -0.8204 | 9.7500 | 0.9167
+teacher_anchor | -6 | induction | 12 | -0.5385 | 0.8585 | -11.1875 | 0.9167
+teacher_anchor | -6 | rescue | 12 | 0.5415 | -0.8611 | 10.8438 | 0.9167
+
+Highlights:
+  Best rescue layer by mean delta_gold_prob: neutral_wrong_answer_cue, layer=-6, value=0.6102
+  Best rescue layer by mean delta_margin: neutral_wrong_answer_cue, layer=-6, value=13.9821
+  Strongest induction layer by shortcut increase: neutral_wrong_answer_cue, layer=-6, value=0.8830
+
+Per-pressure-type trends:
+  neutral_wrong_answer_cue: rescue best margin at layer=-6 (13.9821)
+  neutral_wrong_answer_cue: induction strongest shortcut increase at layer=-6 (0.8830)
+  teacher_anchor: rescue best margin at layer=-6 (10.8438)
+  teacher_anchor: induction strongest shortcut increase at layer=-6 (0.8585)

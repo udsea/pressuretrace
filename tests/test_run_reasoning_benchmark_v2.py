@@ -23,7 +23,13 @@ class RunReasoningBenchmarkV2TestCase(unittest.TestCase):
         self.assertFalse(profile.enable_thinking)
         self.assertTrue(profile.do_sample)
 
-    def test_non_qwen3_models_reject_non_default_thinking_modes(self) -> None:
+    def test_non_qwen3_models_allow_off_as_default_behavior(self) -> None:
+        profile = _generation_profile_for_model_v2("Qwen/Qwen2.5-14B-Instruct", "off")
+
+        self.assertEqual(profile.backend, "pipeline_chat")
+        self.assertFalse(profile.do_sample)
+
+    def test_non_qwen3_models_reject_thinking_on(self) -> None:
         with self.assertRaises(ValueError):
             _generation_profile_for_model_v2("Qwen/Qwen2.5-14B-Instruct", "on")
 

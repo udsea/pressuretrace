@@ -164,7 +164,7 @@ def generation_profile_for_reasoning_v2(
             enable_thinking=validated_thinking_mode in {"default", "on"},
         )
 
-    if validated_thinking_mode != "default":
+    if validated_thinking_mode == "on":
         raise ValueError(
             f"Thinking mode '{validated_thinking_mode}' is only supported for Qwen3 models in v2."
         )

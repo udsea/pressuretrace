@@ -30,7 +30,7 @@ class _FakeTokenizer:
         *,
         tokenize: bool,
         add_generation_prompt: bool,
-        enable_thinking: bool,
+        enable_thinking: bool | None = None,
     ) -> str:
         self.calls.append(
             {
@@ -114,7 +114,12 @@ class ExtractReasoningHiddenStatesTestCase(unittest.TestCase):
             },
         ]
 
-        selected_rows = select_reasoning_probe_rows(manifest_rows, result_rows)
+        selected_rows = select_reasoning_probe_rows(
+            manifest_rows,
+            result_rows,
+            model_name=REASONING_V2_MODEL_NAME,
+            thinking_mode="off",
+        )
 
         self.assertEqual(len(selected_rows), 2)
         self.assertEqual(
@@ -125,6 +130,36 @@ class ExtractReasoningHiddenStatesTestCase(unittest.TestCase):
             {row["metadata"]["base_task_id"] for row in selected_rows},
             {"base_1", "base_2"},
         )
+
+    def test_select_reasoning_probe_rows_respects_requested_model(self) -> None:
+        manifest_rows = [
+            {
+                "task_id": "task_1",
+                "prompt": "Prompt 1",
+                "metadata": {"base_task_id": "base_1"},
+            }
+        ]
+        result_rows = [
+            {
+                "task_id": "task_1",
+                "family": "reasoning_conflict",
+                "pressure_type": "teacher_anchor",
+                "route_label": "robust_correct",
+                "model_name": "Qwen/Qwen2.5-7B-Instruct",
+                "thinking_mode": "off",
+                "prompt": "Prompt 1",
+            }
+        ]
+
+        selected_rows = select_reasoning_probe_rows(
+            manifest_rows,
+            result_rows,
+            model_name="Qwen/Qwen2.5-7B-Instruct",
+            thinking_mode="off",
+        )
+
+        self.assertEqual(len(selected_rows), 1)
+        self.assertEqual(selected_rows[0]["model_name"], "Qwen/Qwen2.5-7B-Instruct")
 
     def test_project_hidden_state_vector_supports_last_token_and_mean_pool(self) -> None:
         hidden_state = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])

@@ -1,0 +1,13 @@
+pressure_type,layer,direction,n_pairs,mean_delta_gold_prob,mean_delta_shortcut_prob,mean_delta_margin,top1_changed_rate
+neutral_wrong_answer_cue,-10,induction,14,-0.4398,0.6475,-9.3214,0.6429
+neutral_wrong_answer_cue,-10,rescue,14,0.5811,-0.8850,12.8125,0.9286
+neutral_wrong_answer_cue,-8,induction,14,-0.4706,0.6696,-9.7679,0.6429
+neutral_wrong_answer_cue,-8,rescue,14,0.5734,-0.8759,12.8750,0.9286
+neutral_wrong_answer_cue,-6,induction,14,-0.5774,0.8830,-13.8214,0.8571
+neutral_wrong_answer_cue,-6,rescue,14,0.6102,-0.9140,13.9821,0.9286
+teacher_anchor,-10,induction,12,-0.4029,0.5239,-7.2500,0.5833
+teacher_anchor,-10,rescue,12,0.5124,-0.8346,9.8333,0.9167
+teacher_anchor,-8,induction,12,-0.4255,0.5563,-7.7917,0.6667
+teacher_anchor,-8,rescue,12,0.5073,-0.8204,9.7500,0.9167
+teacher_anchor,-6,induction,12,-0.5385,0.8585,-11.1875,0.9167
+teacher_anchor,-6,rescue,12,0.5415,-0.8611,10.8438,0.9167

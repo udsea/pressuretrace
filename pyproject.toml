@@ -9,8 +9,9 @@ description = "Research scaffold for studying pressure-induced shifts toward sho
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "accelerate>=1.0.0",
     "datasets>=2.20.0",
-    "transformers>=4.45.0",
+    "transformers>=4.51.0",
     "torch>=2.4.0",
     "scikit-learn>=1.5.0",
     "numpy>=1.26.0",

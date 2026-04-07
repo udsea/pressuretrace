@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from rich.console import Console
@@ -22,7 +22,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from transformers import GenerationConfig, pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, pipeline
 
 from pressuretrace.config import DEFAULT_MODELS
 from pressuretrace.evaluation.reasoning_eval import evaluate_reasoning_response
@@ -45,6 +45,30 @@ class ReasoningPilotArtifacts:
 
 
 REASONING_MAX_NEW_TOKENS = 64
+QWEN3_MAX_NEW_TOKENS = 256
+
+
+@dataclass(frozen=True)
+class ReasoningGenerationProfile:
+    """Model-specific decoding settings for reasoning pilots."""
+
+    backend: Literal["pipeline_chat", "manual_qwen3"]
+    do_sample: bool
+    max_new_tokens: int
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    enable_thinking: bool = False
+
+
+@dataclass(frozen=True)
+class ManualReasoningGenerator:
+    """Loaded model bundle for manual generation paths."""
+
+    model: Any
+    tokenizer: Any
+    profile: ReasoningGenerationProfile
 
 
 def _slugify_model_name(model_name: str) -> str:
@@ -82,22 +106,61 @@ def _prepare_results_file(path: Path) -> Path:
     return path
 
 
-def _build_generation_config(generator: Any) -> GenerationConfig:
-    """Create a generation config without overlapping per-call kwargs."""
+def _is_qwen3_model(model_name: str) -> bool:
+    """Return whether the model should use the dedicated Qwen3 path."""
 
-    generation_config = GenerationConfig(
+    return model_name.startswith("Qwen/Qwen3-")
+
+
+def _generation_profile_for_model(model_name: str) -> ReasoningGenerationProfile:
+    """Choose a generation profile for the selected model."""
+
+    if _is_qwen3_model(model_name):
+        return ReasoningGenerationProfile(
+            backend="manual_qwen3",
+            do_sample=True,
+            max_new_tokens=QWEN3_MAX_NEW_TOKENS,
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            enable_thinking=True,
+        )
+
+    return ReasoningGenerationProfile(
+        backend="pipeline_chat",
         do_sample=False,
         max_new_tokens=REASONING_MAX_NEW_TOKENS,
     )
+
+
+def _build_generation_config(
+    tokenizer: Any,
+    eos_token_id: int | list[int] | None,
+    profile: ReasoningGenerationProfile,
+) -> GenerationConfig:
+    """Create a generation config without overlapping per-call kwargs."""
+
+    generation_config = GenerationConfig(
+        do_sample=profile.do_sample,
+        max_new_tokens=profile.max_new_tokens,
+    )
     generation_config.max_length = None
 
-    tokenizer = generator.tokenizer
     if tokenizer is not None and tokenizer.pad_token_id is not None:
         generation_config.pad_token_id = tokenizer.pad_token_id
 
-    eos_token_id = generator.model.config.eos_token_id
     if eos_token_id is not None:
         generation_config.eos_token_id = eos_token_id
+
+    if profile.temperature is not None:
+        generation_config.temperature = profile.temperature
+    if profile.top_p is not None:
+        generation_config.top_p = profile.top_p
+    if profile.top_k is not None:
+        generation_config.top_k = profile.top_k
+    if profile.min_p is not None:
+        generation_config.min_p = profile.min_p
 
     return generation_config
 
@@ -110,15 +173,66 @@ def _pipeline_load_kwargs() -> dict[str, Any]:
         model_kwargs["torch_dtype"] = torch.float16
         return {"device": torch.device("mps"), "model_kwargs": model_kwargs}
     if torch.cuda.is_available():
-        model_kwargs["torch_dtype"] = torch.float16
+        model_kwargs["torch_dtype"] = torch.bfloat16
         return {"device_map": "auto", "model_kwargs": model_kwargs}
     model_kwargs["torch_dtype"] = torch.float32
     return {"device": torch.device("cpu"), "model_kwargs": model_kwargs}
 
 
+def _manual_model_load_kwargs() -> dict[str, Any]:
+    """Choose load settings for direct AutoModel generation paths."""
+
+    load_kwargs: dict[str, Any] = {"low_cpu_mem_usage": True}
+    if torch.backends.mps.is_available():
+        load_kwargs["torch_dtype"] = torch.float16
+        return load_kwargs
+    if torch.cuda.is_available():
+        load_kwargs["torch_dtype"] = torch.bfloat16
+        load_kwargs["device_map"] = "auto"
+        return load_kwargs
+    load_kwargs["torch_dtype"] = torch.float32
+    return load_kwargs
+
+
+def _model_input_device(model: Any) -> torch.device:
+    """Select a device for tokenizer outputs before generation."""
+
+    if hasattr(model, "hf_device_map"):
+        for raw_device in model.hf_device_map.values():
+            if isinstance(raw_device, int):
+                return torch.device(f"cuda:{raw_device}")
+            if isinstance(raw_device, str) and raw_device not in {"cpu", "disk"}:
+                return torch.device(raw_device)
+    return next(model.parameters()).device
+
+
+def _strip_qwen3_thinking_content(text: str) -> str:
+    """Remove Qwen3 thinking blocks, keeping only the final visible answer."""
+
+    if "</think>" in text:
+        return text.split("</think>")[-1].strip()
+    return text.strip()
+
+
 @lru_cache(maxsize=1)
 def _load_reasoning_generator(model_name: str) -> Any:
     """Load and cache a text-generation pipeline for reasoning pilots."""
+
+    profile = _generation_profile_for_model(model_name)
+    if profile.backend == "manual_qwen3":
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            **_manual_model_load_kwargs(),
+        )
+        return ManualReasoningGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            profile=profile,
+        )
 
     generator = pipeline(
         "text-generation",
@@ -126,23 +240,71 @@ def _load_reasoning_generator(model_name: str) -> Any:
         tokenizer=model_name,
         **_pipeline_load_kwargs(),
     )
-    tokenizer = generator.tokenizer
+    pipeline_tokenizer: Any = generator.tokenizer
     if (
-        tokenizer is not None
-        and tokenizer.pad_token_id is None
+        pipeline_tokenizer is not None
+        and pipeline_tokenizer.pad_token_id is None
         and generator.model.config.eos_token_id is not None
     ):
-        tokenizer.pad_token_id = generator.model.config.eos_token_id
+        pipeline_tokenizer.pad_token_id = generator.model.config.eos_token_id
 
-    generator.generation_config = _build_generation_config(generator)
+    generator.generation_config = _build_generation_config(
+        tokenizer=pipeline_tokenizer,
+        eos_token_id=generator.model.config.eos_token_id,
+        profile=profile,
+    )
 
     return generator
+
+
+def _infer_with_qwen3(prompt: str, generator: ManualReasoningGenerator) -> str:
+    """Run a reasoning prompt through a Qwen3 model with thinking enabled."""
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You solve grade-school math word problems. Answer with just the final number."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    text = generator.tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=generator.profile.enable_thinking,
+    )
+    model_inputs = generator.tokenizer([text], return_tensors="pt")
+    input_device = _model_input_device(generator.model)
+    model_inputs = {
+        name: tensor.to(input_device)
+        for name, tensor in model_inputs.items()
+    }
+    with torch.inference_mode():
+        generated_ids = generator.model.generate(
+            **model_inputs,
+            do_sample=generator.profile.do_sample,
+            max_new_tokens=generator.profile.max_new_tokens,
+            temperature=generator.profile.temperature,
+            top_p=generator.profile.top_p,
+            top_k=generator.profile.top_k,
+            min_p=generator.profile.min_p,
+            pad_token_id=generator.tokenizer.pad_token_id,
+            eos_token_id=generator.tokenizer.eos_token_id,
+        )
+    output_ids = generated_ids[0][model_inputs["input_ids"].shape[1] :]
+    response = generator.tokenizer.decode(output_ids, skip_special_tokens=True)
+    return _strip_qwen3_thinking_content(response)
 
 
 def infer_reasoning_model(prompt: str, model_name: str) -> str:
     """Run a single reasoning prompt through the selected model."""
 
     generator = _load_reasoning_generator(model_name)
+    if isinstance(generator, ManualReasoningGenerator):
+        return _infer_with_qwen3(prompt=prompt, generator=generator)
+
     messages = [
         {
             "role": "system",

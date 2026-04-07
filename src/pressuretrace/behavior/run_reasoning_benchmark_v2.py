@@ -20,12 +20,14 @@ from rich.progress import (
 )
 
 from pressuretrace.behavior.reasoning_runtime import (
+    STRICT_INTEGER_SYSTEM_PROMPT,
     ReasoningGenerationProfile,
     ThinkingMode,
     default_results_path,
+    generation_profile_for_reasoning_v2,
     infer_reasoning_response,
-    is_qwen3_model,
     load_reasoning_generator,
+    validate_thinking_mode,
 )
 from pressuretrace.behavior.reasoning_runtime import (
     count_base_tasks as _count_base_tasks,
@@ -36,9 +38,6 @@ from pressuretrace.behavior.reasoning_runtime import (
 from pressuretrace.behavior.reasoning_runtime import (
     filter_manifest_rows as _filter_manifest_rows,
 )
-from pressuretrace.behavior.reasoning_runtime import (
-    prepare_results_file as _prepare_results_file,
-)
 from pressuretrace.config import DEFAULT_MODELS
 from pressuretrace.evaluation.reasoning_eval_v2 import evaluate_reasoning_response_v2
 from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
@@ -46,17 +45,7 @@ from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
     load_reasoning_manifest_v2,
 )
 from pressuretrace.utils.io import append_jsonl
-
-VALID_THINKING_MODES: tuple[ThinkingMode, ...] = ("default", "on", "off")
-STRICT_INTEGER_SYSTEM_PROMPT = (
-    "You solve grade-school math word problems. "
-    "Answer with exactly one integer and no other text. "
-    "Do not explain your reasoning. "
-    "Your entire response must be a single integer, like 42."
-)
-
-REASONING_MAX_NEW_TOKENS = 64
-QWEN3_MAX_NEW_TOKENS = 96
+from pressuretrace.utils.io import prepare_results_file as _prepare_results_file
 
 
 @dataclass(frozen=True)
@@ -90,10 +79,7 @@ def _default_output_path(
 def _validate_thinking_mode(thinking_mode: str) -> ThinkingMode:
     """Validate and normalize the requested thinking mode."""
 
-    if thinking_mode not in VALID_THINKING_MODES:
-        available = ", ".join(VALID_THINKING_MODES)
-        raise ValueError(f"Unknown thinking mode '{thinking_mode}'. Available: {available}.")
-    return thinking_mode
+    return validate_thinking_mode(thinking_mode)
 
 
 def _generation_profile_for_model_v2(
@@ -102,29 +88,7 @@ def _generation_profile_for_model_v2(
 ) -> ReasoningGenerationProfile:
     """Choose a v2 generation profile for the selected model."""
 
-    validated_thinking_mode = _validate_thinking_mode(thinking_mode)
-    if is_qwen3_model(model_name):
-        return ReasoningGenerationProfile(
-            backend="manual_qwen3",
-            do_sample=True,
-            max_new_tokens=QWEN3_MAX_NEW_TOKENS,
-            temperature=0.6,
-            top_p=0.95,
-            top_k=20,
-            min_p=0.0,
-            enable_thinking=validated_thinking_mode in {"default", "on"},
-        )
-
-    if validated_thinking_mode != "default":
-        raise ValueError(
-            f"Thinking mode '{validated_thinking_mode}' is only supported for Qwen3 models in v2."
-        )
-
-    return ReasoningGenerationProfile(
-        backend="pipeline_chat",
-        do_sample=False,
-        max_new_tokens=REASONING_MAX_NEW_TOKENS,
-    )
+    return generation_profile_for_reasoning_v2(model_name, thinking_mode)
 
 
 def _load_reasoning_generator_v2(model_name: str, thinking_mode: str) -> Any:
@@ -182,8 +146,7 @@ def _run_reasoning_manifest_rows_v2(
 
     if show_progress and console is not None:
         count_summary = ", ".join(
-            f"{pressure_name}={count}"
-            for pressure_name, count in selected_counts.items()
+            f"{pressure_name}={count}" for pressure_name, count in selected_counts.items()
         )
         console.print(
             f"[bold]Step 2/3[/bold] Prepared [bold]{len(manifest_rows)}[/bold] episodes "
@@ -225,8 +188,7 @@ def _run_reasoning_manifest_rows_v2(
                 progress.update(
                     progress_task_id,
                     description=(
-                        f"[{row['pressure_type']}] {row['task_id']} "
-                        f"({index}/{len(manifest_rows)})"
+                        f"[{row['pressure_type']}] {row['task_id']} ({index}/{len(manifest_rows)})"
                     ),
                 )
 

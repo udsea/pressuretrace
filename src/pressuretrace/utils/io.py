@@ -18,6 +18,14 @@ def ensure_directory(path: Path) -> Path:
     return path
 
 
+def prepare_results_file(path: Path) -> Path:
+    """Create or truncate a JSONL/text output file before streaming rows."""
+
+    ensure_directory(path.parent)
+    path.write_bytes(b"")
+    return path
+
+
 def _json_ready(row: Any) -> Any:
     """Convert common project types into JSON-serializable objects."""
 

@@ -13,12 +13,18 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, pipeline
 
 from pressuretrace.paths import results_dir
-from pressuretrace.utils.io import ensure_directory
 
-SYSTEM_PROMPT = (
-    "You solve grade-school math word problems. Answer with just the final number."
+SYSTEM_PROMPT = "You solve grade-school math word problems. Answer with just the final number."
+STRICT_INTEGER_SYSTEM_PROMPT = (
+    "You solve grade-school math word problems. "
+    "Answer with exactly one integer and no other text. "
+    "Do not explain your reasoning. "
+    "Your entire response must be a single integer, like 42."
 )
 ThinkingMode = Literal["default", "on", "off"]
+VALID_THINKING_MODES: tuple[ThinkingMode, ...] = ("default", "on", "off")
+REASONING_V2_MAX_NEW_TOKENS = 64
+QWEN3_V2_MAX_NEW_TOKENS = 96
 
 
 @dataclass(frozen=True)
@@ -81,14 +87,6 @@ def count_base_tasks(rows: list[dict[str, Any]]) -> int:
     return len({str(row["metadata"]["base_task_id"]) for row in rows})
 
 
-def prepare_results_file(path: Path) -> Path:
-    """Create or truncate the output JSONL file before streaming rows."""
-
-    ensure_directory(path.parent)
-    path.write_bytes(b"")
-    return path
-
-
 def filter_manifest_rows(
     rows: list[dict[str, Any]],
     pressure_type: str,
@@ -127,6 +125,55 @@ def strip_qwen3_thinking_content(text: str) -> str:
     if "</think>" in text:
         return text.split("</think>")[-1].strip()
     return text.strip()
+
+
+def build_reasoning_messages(prompt: str, system_prompt: str) -> list[dict[str, str]]:
+    """Construct the chat message list for reasoning runs."""
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+
+
+def validate_thinking_mode(thinking_mode: str) -> ThinkingMode:
+    """Validate and normalize the requested thinking mode."""
+
+    if thinking_mode not in VALID_THINKING_MODES:
+        available = ", ".join(VALID_THINKING_MODES)
+        raise ValueError(f"Unknown thinking mode '{thinking_mode}'. Available: {available}.")
+    return thinking_mode
+
+
+def generation_profile_for_reasoning_v2(
+    model_name: str,
+    thinking_mode: str,
+) -> ReasoningGenerationProfile:
+    """Choose the shared reasoning-v2 generation profile for a model."""
+
+    validated_thinking_mode = validate_thinking_mode(thinking_mode)
+    if is_qwen3_model(model_name):
+        return ReasoningGenerationProfile(
+            backend="manual_qwen3",
+            do_sample=True,
+            max_new_tokens=QWEN3_V2_MAX_NEW_TOKENS,
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            enable_thinking=validated_thinking_mode in {"default", "on"},
+        )
+
+    if validated_thinking_mode != "default":
+        raise ValueError(
+            f"Thinking mode '{validated_thinking_mode}' is only supported for Qwen3 models in v2."
+        )
+
+    return ReasoningGenerationProfile(
+        backend="pipeline_chat",
+        do_sample=False,
+        max_new_tokens=REASONING_V2_MAX_NEW_TOKENS,
+    )
 
 
 def _build_generation_config(
@@ -199,6 +246,38 @@ def _model_input_device(model: Any) -> torch.device:
     return next(model.parameters()).device
 
 
+def manual_model_load_kwargs() -> dict[str, Any]:
+    """Expose manual model load kwargs for prompt-only probing utilities."""
+
+    return _manual_model_load_kwargs()
+
+
+def model_input_device(model: Any) -> torch.device:
+    """Expose the correct model input device for prompt-only probing utilities."""
+
+    return _model_input_device(model)
+
+
+def prepare_manual_reasoning_inputs(
+    generator: ManualReasoningGenerator,
+    prompt: str,
+    *,
+    system_prompt: str = SYSTEM_PROMPT,
+) -> dict[str, torch.Tensor]:
+    """Tokenize the prompt exactly as the manual Qwen3 backend does."""
+
+    messages = build_reasoning_messages(prompt=prompt, system_prompt=system_prompt)
+    text = generator.tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=generator.profile.enable_thinking,
+    )
+    model_inputs = generator.tokenizer([text], return_tensors="pt")
+    input_device = _model_input_device(generator.model)
+    return {name: tensor.to(input_device) for name, tensor in model_inputs.items()}
+
+
 @lru_cache(maxsize=16)
 def load_reasoning_generator(
     model_name: str,
@@ -255,19 +334,11 @@ def infer_reasoning_response(
 
     generator = load_reasoning_generator(model_name, profile)
     if isinstance(generator, ManualReasoningGenerator):
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
-        text = generator.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=generator.profile.enable_thinking,
+        model_inputs = prepare_manual_reasoning_inputs(
+            generator,
+            prompt,
+            system_prompt=system_prompt,
         )
-        model_inputs = generator.tokenizer([text], return_tensors="pt")
-        input_device = _model_input_device(generator.model)
-        model_inputs = {name: tensor.to(input_device) for name, tensor in model_inputs.items()}
         with torch.inference_mode():
             generated_ids = generator.model.generate(
                 **model_inputs,

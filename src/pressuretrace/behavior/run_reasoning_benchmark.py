@@ -38,9 +38,6 @@ from pressuretrace.behavior.reasoning_runtime import (
 from pressuretrace.behavior.reasoning_runtime import (
     is_qwen3_model as _is_qwen3_model,
 )
-from pressuretrace.behavior.reasoning_runtime import (
-    prepare_results_file as _prepare_results_file,
-)
 from pressuretrace.config import DEFAULT_MODELS
 from pressuretrace.evaluation.reasoning_eval import evaluate_reasoning_response
 from pressuretrace.generation.reasoning.make_reasoning_tasks import (
@@ -48,6 +45,7 @@ from pressuretrace.generation.reasoning.make_reasoning_tasks import (
     load_reasoning_manifest,
 )
 from pressuretrace.utils.io import append_jsonl
+from pressuretrace.utils.io import prepare_results_file as _prepare_results_file
 
 
 @dataclass(frozen=True)

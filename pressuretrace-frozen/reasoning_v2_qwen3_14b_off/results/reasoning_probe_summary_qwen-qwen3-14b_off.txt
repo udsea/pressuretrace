@@ -1,0 +1,45 @@
+PressureTrace reasoning probe summary
+
+Filtering logic:
+  - family == reasoning_conflict
+  - pressure_type in {neutral_wrong_answer_cue, teacher_anchor}
+  - route_label in {robust_correct, shortcut_followed}
+  - binary_label: robust_correct=0, shortcut_followed=1
+
+Frozen root: /Users/udbhav/Dev/tinkering/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off
+Source manifest: /Users/udbhav/Dev/tinkering/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/data/manifests/reasoning_paper_slice_qwen-qwen3-14b_off.jsonl
+Source results: /Users/udbhav/Dev/tinkering/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_paper_slice_qwen-qwen3-14b_off.jsonl
+Hidden-state file: /Users/udbhav/Dev/tinkering/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_probe_hidden_states_qwen-qwen3-14b_off.jsonl
+Probe dataset: /Users/udbhav/Dev/tinkering/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_probe_dataset_qwen-qwen3-14b_off.jsonl
+Probe metrics JSONL: /Users/udbhav/Dev/tinkering/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_probe_metrics_qwen-qwen3-14b_off.jsonl
+
+Model: Qwen/Qwen3-14B
+Thinking mode: off
+Hidden-state rows: 4992
+Retained episodes: 416
+Unique base tasks: 215
+Per-pressure counts: neutral_wrong_answer_cue=209, teacher_anchor=207
+Label balance: 0=144, 1=272
+Train base tasks: 150
+Test base tasks: 65
+Split stratified by base-task label: True
+Layers used: -10, -8, -6, -4, -2, -1
+Representations used: last_token, mean_pool
+
+Ranked hidden-state probe results:
+  1. layer=-10, representation=last_token, roc_auc=0.8138, accuracy=0.7795, f1=0.8427
+  2. layer=-6, representation=last_token, roc_auc=0.8007, accuracy=0.7402, f1=0.8254
+  3. layer=-2, representation=last_token, roc_auc=0.7963, accuracy=0.7244, f1=0.8108
+  4. layer=-8, representation=last_token, roc_auc=0.7894, accuracy=0.7795, f1=0.8462
+  5. layer=-1, representation=last_token, roc_auc=0.7807, accuracy=0.7244, f1=0.8108
+  6. layer=-4, representation=last_token, roc_auc=0.7798, accuracy=0.7087, f1=0.7956
+
+Baseline comparison:
+  prompt_length: roc_auc=0.6413, accuracy=0.6063
+  tfidf_prompt: roc_auc=0.6290, accuracy=0.5669
+
+Concise interpretation:
+  Late hidden states, especially last-token representations, predict shortcut-following substantially better than prompt-only baselines. Mean-pool representations remain much weaker, which suggests the route-choice signal is concentrated near the final prompt state.
+
+Best hidden-state probe result:
+  layer=-10, representation=last_token, roc_auc=0.8138, accuracy=0.7795, f1=0.8427

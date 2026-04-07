@@ -148,6 +148,34 @@ def _compute_binary_metrics(
     return metrics
 
 
+def probe_metrics(
+    *,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_prob: np.ndarray,
+    train_rows: list[dict[str, Any]],
+    test_rows: list[dict[str, Any]],
+ ) -> dict[str, float | int]:
+    """Compatibility wrapper for downstream frozen-artifact reporting."""
+
+    metrics = _compute_binary_metrics(y_true, y_pred, y_prob)
+    test_pos = int(np.sum(y_true))
+    train_pos = int(sum(int(row["binary_label"]) for row in train_rows))
+    train_size = len(train_rows)
+    test_size = len(test_rows)
+    return {
+        **metrics,
+        "train_size": float(train_size),
+        "test_size": float(test_size),
+        "train_pos": float(train_pos),
+        "train_neg": float(train_size - train_pos),
+        "test_pos": float(test_pos),
+        "test_neg": float(test_size - test_pos),
+        "mean_prob_y1": _mean_probability(np.asarray(y_prob), np.asarray(y_true), 1),
+        "mean_prob_y0": _mean_probability(np.asarray(y_prob), np.asarray(y_true), 0),
+    }
+
+
 def _fit_logistic_probe(
     train_features: np.ndarray,
     train_labels: np.ndarray,
@@ -292,6 +320,29 @@ def _metrics_row(
         "test_neg": len(y_true) - test_pos,
         "mean_prob_y1": _mean_probability(y_prob, y_true, 1),
         "mean_prob_y0": _mean_probability(y_prob, y_true, 0),
+    }
+
+
+def probe_metrics(
+    *,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_prob: np.ndarray,
+    train_rows: list[dict[str, Any]],
+    test_rows: list[dict[str, Any]],
+) -> dict[str, float]:
+    """Return the standard probe metrics payload for legacy reporting helpers."""
+
+    metrics = _compute_binary_metrics(y_true, y_pred, y_prob)
+    return {
+        "roc_auc": metrics["roc_auc"],
+        "accuracy": metrics["accuracy"],
+        "f1": metrics["f1"],
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+        "inverse_auc": metrics["inverse_auc"],
+        "train_size": len(train_rows),
+        "test_size": len(test_rows),
     }
 
 

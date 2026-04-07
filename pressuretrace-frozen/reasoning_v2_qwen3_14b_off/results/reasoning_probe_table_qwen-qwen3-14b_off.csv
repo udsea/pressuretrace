@@ -1,0 +1,9 @@
+method,layer,representation,roc_auc,accuracy,f1
+hidden_state_probe,-10,last_token,0.8138,0.7795,0.8427
+hidden_state_probe,-6,last_token,0.8007,0.7402,0.8254
+hidden_state_probe,-2,last_token,0.7963,0.7244,0.8108
+hidden_state_probe,-8,last_token,0.7894,0.7795,0.8462
+hidden_state_probe,-1,last_token,0.7807,0.7244,0.8108
+hidden_state_probe,-4,last_token,0.7798,0.7087,0.7956
+prompt_length,,,0.6413,0.6063,0.6667
+tfidf_prompt,,,0.6290,0.5669,0.6452

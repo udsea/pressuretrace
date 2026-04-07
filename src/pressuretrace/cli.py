@@ -454,6 +454,250 @@ def summarize_v2_command(
     print_behavior_summary_v2(input_path)
 
 
+@app.command("probe-summary-export")
+def probe_summary_export_command(
+    frozen_root: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--frozen-root",
+        help="Optional frozen reasoning probe root; defaults to the configured root.",
+    ),
+    artifact_index: bool = typer.Option(
+        True,
+        "--artifact-index/--no-artifact-index",
+        help="Write ARTIFACTS.md under the frozen root.",
+    ),
+    metrics_csv: bool = typer.Option(
+        True,
+        "--metrics-csv/--no-metrics-csv",
+        help="Write the flat probe metrics CSV under frozen results.",
+    ),
+    summary: bool = typer.Option(
+        True,
+        "--summary/--no-summary",
+        help="Rewrite the polished human-readable probe summary under frozen results.",
+    ),
+) -> None:
+    """Export derived frozen reasoning probe reports."""
+
+    from pressuretrace.analysis.reasoning_probe_reports import export_probe_reports
+
+    outputs = export_probe_reports(
+        frozen_root=frozen_root,
+        write_artifact_index=artifact_index,
+        write_csv=metrics_csv,
+        write_summary=summary,
+    )
+    for name, path in outputs.items():
+        console.print(f"{name}: [bold]{path}[/bold]")
+
+
+@app.command("probe-plots")
+def probe_plots_command(
+    metrics_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--metrics-path",
+        help="Optional explicit probe metrics JSONL path.",
+    ),
+    dataset_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--dataset-path",
+        help="Optional explicit probe dataset JSONL path.",
+    ),
+    summary_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-path",
+        help="Optional explicit probe summary path.",
+    ),
+    output_dir: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-dir",
+        help="Optional plot output directory; defaults to the frozen results root.",
+    ),
+) -> None:
+    """Generate frozen reasoning probe plots."""
+
+    from pressuretrace.analysis.plot_reasoning_probe_results import generate_reasoning_probe_plots
+    from pressuretrace.analysis.reasoning_probe_reports import get_frozen_reasoning_probe_paths
+
+    paths = get_frozen_reasoning_probe_paths()
+    outputs = generate_reasoning_probe_plots(
+        metrics_path=metrics_path or paths.probe_metrics_path,
+        dataset_path=dataset_path or paths.probe_dataset_path,
+        summary_path=summary_path or paths.probe_summary_path,
+        output_dir=output_dir or paths.frozen_root / "results",
+    )
+    for path in outputs:
+        console.print(f"plot: [bold]{path}[/bold]")
+
+
+@app.command("probe-table-export")
+def probe_table_export_command(
+    metrics_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--metrics-path",
+        help="Optional explicit probe metrics JSONL path.",
+    ),
+    dataset_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--dataset-path",
+        help="Optional explicit probe dataset JSONL path.",
+    ),
+    csv_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--csv-path",
+        help="Optional explicit paper-table CSV path.",
+    ),
+    markdown_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--markdown-path",
+        help="Optional explicit paper-table Markdown path.",
+    ),
+) -> None:
+    """Export the frozen reasoning probe paper table."""
+
+    from pressuretrace.analysis.export_reasoning_probe_table import export_reasoning_probe_table
+    from pressuretrace.analysis.reasoning_probe_reports import get_frozen_reasoning_probe_paths
+
+    paths = get_frozen_reasoning_probe_paths()
+    outputs = export_reasoning_probe_table(
+        metrics_path=metrics_path or paths.probe_metrics_path,
+        dataset_path=dataset_path or paths.probe_dataset_path,
+        csv_path=csv_path or paths.table_csv_path,
+        markdown_path=markdown_path or paths.table_md_path,
+    )
+    for name, path in outputs.items():
+        console.print(f"{name}: [bold]{path}[/bold]")
+
+
+@app.command("reasoning-patch-pairs")
+def reasoning_patch_pairs_command(
+    results_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--results-path",
+        help="Optional explicit frozen reasoning results path.",
+    ),
+    control_slice_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--control-slice-path",
+        help="Optional explicit frozen control-robust slice path.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit patch-pairs JSONL path.",
+    ),
+) -> None:
+    """Build matched control/pressure patch pairs for reasoning route patching."""
+
+    from pressuretrace.analysis.reasoning_probe_reports import get_frozen_reasoning_probe_paths
+    from pressuretrace.patching.build_reasoning_patch_pairs import build_reasoning_patch_pairs
+
+    paths = get_frozen_reasoning_probe_paths()
+    patch_pairs_path = build_reasoning_patch_pairs(
+        results_path=results_path or paths.paper_results_path,
+        control_slice_path=control_slice_path or paths.control_slice_path,
+        output_path=output_path or paths.patch_pairs_path,
+    )
+    console.print(f"patch_pairs: [bold]{patch_pairs_path}[/bold]")
+
+
+@app.command("reasoning-route-patching")
+def reasoning_route_patching_command(
+    frozen_root: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--frozen-root",
+        help="Optional explicit repo-local frozen reasoning root.",
+    ),
+    patch_pairs_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--patch-pairs-path",
+        help="Optional explicit patch-pairs JSONL path.",
+    ),
+    manifest_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--manifest-path",
+        help="Optional explicit frozen manifest path.",
+    ),
+    results_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--results-path",
+        help="Optional explicit frozen results path.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit patching-output JSONL path.",
+    ),
+    summary_txt_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-txt-path",
+        help="Optional explicit patching summary TXT path.",
+    ),
+    summary_csv_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-csv-path",
+        help="Optional explicit patching summary CSV path.",
+    ),
+    model_name: str = typer.Option(
+        "Qwen/Qwen3-14B",
+        help="Model used for reasoning route patching.",
+    ),
+    thinking_mode: str = typer.Option(
+        "off",
+        "--thinking-mode",
+        help="Thinking mode for route patching.",
+    ),
+    layers: str = typer.Option(
+        "-10,-8,-6",
+        "--layers",
+        help="Comma-separated patch layers.",
+    ),
+    pressure_types: str = typer.Option(
+        "neutral_wrong_answer_cue,teacher_anchor",
+        "--pressure-types",
+        help="Comma-separated pressure types to retain.",
+    ),
+    max_pairs: int | None = typer.Option(
+        None,
+        "--max-pairs",
+        help="Optional cap on retained pairs for debugging.",
+    ),
+) -> None:
+    """Run first-pass logit-level reasoning route patching on frozen pairs."""
+
+    from pressuretrace.patching.run_reasoning_route_patching import (
+        build_route_patching_config,
+        run_reasoning_route_patching,
+    )
+
+    config = build_route_patching_config(
+        frozen_root=frozen_root,
+        patch_pairs_path=patch_pairs_path,
+        manifest_path=manifest_path,
+        results_path=results_path,
+        output_path=output_path,
+        summary_txt_path=summary_txt_path,
+        summary_csv_path=summary_csv_path,
+        model_name=model_name,
+        thinking_mode=thinking_mode,
+        layers=tuple(int(part.strip()) for part in layers.split(",") if part.strip()),
+        pressure_types=tuple(
+            part.strip() for part in pressure_types.split(",") if part.strip()
+        ),
+        max_pairs=max_pairs,
+    )
+    artifacts = run_reasoning_route_patching(config)
+    console.print(f"patching_results: [bold]{artifacts.output_path}[/bold]")
+    console.print(f"summary_txt: [bold]{artifacts.summary_txt_path}[/bold]")
+    console.print(f"summary_csv: [bold]{artifacts.summary_csv_path}[/bold]")
+    console.print(
+        "plots: "
+        f"[bold]{artifacts.rescue_delta_gold_prob_plot_path}[/bold], "
+        f"[bold]{artifacts.rescue_delta_margin_plot_path}[/bold], "
+        f"[bold]{artifacts.induction_delta_shortcut_prob_plot_path}[/bold]"
+    )
+
+
 @app.command("print-paths")
 def print_paths_command() -> None:
     """Print key repository paths."""

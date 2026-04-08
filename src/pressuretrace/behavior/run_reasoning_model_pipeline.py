@@ -8,6 +8,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from rich.console import Console
+
 from pressuretrace.behavior.build_control_robust_slice import build_control_robust_slice
 from pressuretrace.behavior.materialize_reasoning_slice import materialize_reasoning_slice
 from pressuretrace.behavior.reasoning_runtime import slugify_model_name
@@ -226,26 +228,93 @@ def _count_jsonl_rows(path: Path) -> int | None:
         return None
 
 
+def _expected_control_row_count(pool_manifest_path: Path) -> int:
+    """Count the expected number of control rows in the transformed pool."""
+
+    return sum(
+        1
+        for row in read_jsonl(pool_manifest_path)
+        if str(row.get("pressure_type", "")) == "control"
+    )
+
+
+def _expected_manifest_row_count(manifest_path: Path) -> int | None:
+    """Count the expected number of rows in a manifest JSONL when it exists."""
+
+    if not manifest_path.exists():
+        return None
+    return len(read_jsonl(manifest_path))
+
+
+def _has_expected_rows(path: Path, expected_rows: int | None) -> bool:
+    """Return whether a JSONL artifact exists and matches the expected row count."""
+
+    if expected_rows is None:
+        return False
+    actual_rows = _count_jsonl_rows(path)
+    return actual_rows == expected_rows and actual_rows is not None
+
+
+def _log(message: str, *, console: Console | None = None) -> None:
+    """Print a line immediately, using rich when available."""
+
+    if console is not None:
+        console.print(message)
+        return
+    print(message, flush=True)
+
+
 def _print_stage_header(
     stage_number: int,
     total_stages: int,
     label: str,
     destination: Path,
+    *,
+    console: Console | None = None,
 ) -> None:
     """Print a stable stage header with its main output path."""
 
-    print(f"Stage {stage_number}/{total_stages}: {label}")
-    print(f"  output: {destination}")
+    _log(f"Stage {stage_number}/{total_stages}: {label}", console=console)
+    _log(f"  output: {destination}", console=console)
 
 
-def _print_skip_existing(path: Path) -> None:
+def _print_skip_existing(path: Path, *, console: Console | None = None) -> None:
     """Print a concise skip-existing message."""
 
     row_count = _count_jsonl_rows(path)
     if row_count is None:
-        print(f"  skip existing: {path}")
+        _log(f"  skip existing: {path}", console=console)
     else:
-        print(f"  skip existing: {path} ({row_count} rows)")
+        _log(f"  skip existing: {path} ({row_count} rows)", console=console)
+
+
+def _print_rebuild_existing(
+    path: Path,
+    *,
+    expected_rows: int | None,
+    console: Console | None = None,
+) -> None:
+    """Explain why an existing stage output is being recomputed."""
+
+    actual_rows = _count_jsonl_rows(path)
+    if actual_rows is None:
+        return
+    if expected_rows is None:
+        _log(f"  existing output not trusted yet: {path} ({actual_rows} rows)", console=console)
+        return
+    if actual_rows != expected_rows:
+        _log(
+            "  existing output incomplete or stale: "
+            f"{path} ({actual_rows}/{expected_rows} rows); recomputing",
+            console=console,
+        )
+
+
+def _print_rebuild_due_to_upstream(path: Path, *, console: Console | None = None) -> None:
+    """Explain that a stage is being recomputed because an upstream stage changed."""
+
+    if path.exists():
+        _log(f"  upstream changed; recomputing {path}", console=console)
 
 
 def _write_run_info(
@@ -315,51 +384,84 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
             thinking_mode=config.thinking_mode,
         )
     )
+    console = Console() if config.show_progress else None
     pool_manifest_path = _resolve_pool_manifest(config, paths)
 
-    print(f"Model: {config.model_name}")
-    print(f"Thinking mode: {config.thinking_mode}")
-    print(f"Batch size: {config.batch_size}")
-    print(f"Resume enabled: {config.resume}")
-    print(f"Frozen root: {paths.frozen_root}")
-    print(f"Transformed pool: {pool_manifest_path}")
+    _log(f"Model: {config.model_name}", console=console)
+    _log(f"Thinking mode: {config.thinking_mode}", console=console)
+    _log(f"Batch size: {config.batch_size}", console=console)
+    _log(f"Resume enabled: {config.resume}", console=console)
+    _log(f"Frozen root: {paths.frozen_root}", console=console)
+    _log(f"Transformed pool: {pool_manifest_path}", console=console)
 
-    _print_stage_header(1, 6, "control-only run", paths.control_results)
-    if config.resume and _path_is_ready(paths.control_results):
-        _print_skip_existing(paths.control_results)
+    control_refreshed = False
+    _print_stage_header(1, 6, "control-only run", paths.control_results, console=console)
+    expected_control_rows = _expected_control_row_count(pool_manifest_path)
+    if config.resume and _has_expected_rows(paths.control_results, expected_control_rows):
+        _print_skip_existing(paths.control_results, console=console)
     else:
+        if config.resume and paths.control_results.exists():
+            _print_rebuild_existing(
+                paths.control_results,
+                expected_rows=expected_control_rows,
+                console=console,
+            )
         run_reasoning_control_only(
             manifest_path=pool_manifest_path,
             model_name=config.model_name,
             output_path=paths.control_results,
             thinking_mode=config.thinking_mode,
             batch_size=config.batch_size,
+            console=console,
             show_progress=config.show_progress,
         )
+        control_refreshed = True
 
-    _print_stage_header(2, 6, "build control-robust slice", paths.robust_slice)
-    if config.resume and _path_is_ready(paths.robust_slice):
-        _print_skip_existing(paths.robust_slice)
+    robust_slice_refreshed = False
+    _print_stage_header(2, 6, "build control-robust slice", paths.robust_slice, console=console)
+    if not control_refreshed and config.resume and _path_is_ready(paths.robust_slice):
+        _print_skip_existing(paths.robust_slice, console=console)
     else:
+        if control_refreshed:
+            _print_rebuild_due_to_upstream(paths.robust_slice, console=console)
         build_control_robust_slice(
             control_results_path=paths.control_results,
             output_path=paths.robust_slice,
         )
+        robust_slice_refreshed = True
 
-    _print_stage_header(3, 6, "materialize paper slice", paths.paper_manifest)
-    if config.resume and _path_is_ready(paths.paper_manifest):
-        _print_skip_existing(paths.paper_manifest)
+    paper_manifest_refreshed = False
+    _print_stage_header(3, 6, "materialize paper slice", paths.paper_manifest, console=console)
+    if not robust_slice_refreshed and config.resume and _path_is_ready(paths.paper_manifest):
+        _print_skip_existing(paths.paper_manifest, console=console)
     else:
+        if robust_slice_refreshed:
+            _print_rebuild_due_to_upstream(paths.paper_manifest, console=console)
         materialize_reasoning_slice(
             manifest_path=pool_manifest_path,
             slice_path=paths.robust_slice,
             output_path=paths.paper_manifest,
         )
+        paper_manifest_refreshed = True
 
-    _print_stage_header(4, 6, "run paper slice", paths.paper_results)
-    if config.resume and _path_is_ready(paths.paper_results):
-        _print_skip_existing(paths.paper_results)
+    paper_results_refreshed = False
+    _print_stage_header(4, 6, "run paper slice", paths.paper_results, console=console)
+    expected_paper_rows = _expected_manifest_row_count(paths.paper_manifest)
+    if (
+        not paper_manifest_refreshed
+        and config.resume
+        and _has_expected_rows(paths.paper_results, expected_paper_rows)
+    ):
+        _print_skip_existing(paths.paper_results, console=console)
     else:
+        if paper_manifest_refreshed:
+            _print_rebuild_due_to_upstream(paths.paper_results, console=console)
+        elif config.resume and paths.paper_results.exists():
+            _print_rebuild_existing(
+                paths.paper_results,
+                expected_rows=expected_paper_rows,
+                console=console,
+            )
         run_reasoning_manifest_v2(
             manifest_path=paths.paper_manifest,
             model_name=config.model_name,
@@ -368,17 +470,26 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
             include_control=True,
             thinking_mode=config.thinking_mode,
             batch_size=config.batch_size,
+            console=console,
             show_progress=config.show_progress,
         )
+        paper_results_refreshed = True
 
     if config.skip_probes:
-        print("Stage 5/6: probe pipeline skipped")
+        _log("Stage 5/6: probe pipeline skipped", console=console)
     else:
-        print("Stage 5/6: run probe pipeline")
-        if config.resume and _path_is_ready(paths.probe_hidden_states):
-            _print_skip_existing(paths.probe_hidden_states)
+        _log("Stage 5/6: run probe pipeline", console=console)
+        probe_hidden_states_refreshed = False
+        if (
+            not paper_results_refreshed
+            and config.resume
+            and _path_is_ready(paths.probe_hidden_states)
+        ):
+            _print_skip_existing(paths.probe_hidden_states, console=console)
         else:
-            print(f"  hidden-state extraction -> {paths.probe_hidden_states}")
+            if paper_results_refreshed:
+                _print_rebuild_due_to_upstream(paths.probe_hidden_states, console=console)
+            _log(f"  hidden-state extraction -> {paths.probe_hidden_states}", console=console)
             extract_reasoning_hidden_states(
                 ReasoningProbeExtractionConfig(
                     manifest_path=paths.paper_manifest,
@@ -388,26 +499,49 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
                     thinking_mode=config.thinking_mode,
                 )
             )
+            probe_hidden_states_refreshed = True
 
-        if config.resume and _path_is_ready(paths.probe_dataset):
-            _print_skip_existing(paths.probe_dataset)
+        probe_dataset_refreshed = False
+        if (
+            not paper_results_refreshed
+            and not probe_hidden_states_refreshed
+            and config.resume
+            and _path_is_ready(paths.probe_dataset)
+        ):
+            _print_skip_existing(paths.probe_dataset, console=console)
         else:
-            print(f"  probe dataset -> {paths.probe_dataset}")
+            if paper_results_refreshed or probe_hidden_states_refreshed:
+                _print_rebuild_due_to_upstream(paths.probe_dataset, console=console)
+            _log(f"  probe dataset -> {paths.probe_dataset}", console=console)
             build_reasoning_probe_dataset(
                 input_path=paths.probe_hidden_states,
                 output_path=paths.probe_dataset,
             )
+            probe_dataset_refreshed = True
 
         probe_metrics_ready = _path_is_ready(paths.probe_metrics_jsonl) and _path_is_ready(
             paths.probe_summary_txt
         )
-        if config.resume and probe_metrics_ready and _path_is_ready(paths.probe_metrics_csv):
-            _print_skip_existing(paths.probe_metrics_jsonl)
+        probe_upstream_changed = (
+            paper_results_refreshed or probe_hidden_states_refreshed or probe_dataset_refreshed
+        )
+        if (
+            not probe_upstream_changed
+            and config.resume
+            and probe_metrics_ready
+            and _path_is_ready(paths.probe_metrics_csv)
+        ):
+            _print_skip_existing(paths.probe_metrics_jsonl, console=console)
         else:
-            if config.resume and probe_metrics_ready:
-                print(f"  regenerate probe metrics CSV -> {paths.probe_metrics_csv}")
+            if probe_upstream_changed:
+                _print_rebuild_due_to_upstream(paths.probe_metrics_jsonl, console=console)
+            if config.resume and probe_metrics_ready and not probe_upstream_changed:
+                _log(
+                    f"  regenerate probe metrics CSV -> {paths.probe_metrics_csv}",
+                    console=console,
+                )
             else:
-                print(f"  probe training -> {paths.probe_metrics_jsonl}")
+                _log(f"  probe training -> {paths.probe_metrics_jsonl}", console=console)
                 train_reasoning_probes(
                     ProbeTrainingConfig(
                         input_path=paths.probe_dataset,
@@ -418,18 +552,22 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
             _write_probe_metrics_csv(paths.probe_metrics_jsonl, paths.probe_metrics_csv)
 
     if config.skip_patching:
-        print("Stage 6/6: route patching skipped")
+        _log("Stage 6/6: route patching skipped", console=console)
     else:
-        print("Stage 6/6: run route patching")
-        if config.resume and _path_is_ready(paths.patch_pairs):
-            _print_skip_existing(paths.patch_pairs)
+        _log("Stage 6/6: run route patching", console=console)
+        patch_pairs_refreshed = False
+        if not paper_results_refreshed and config.resume and _path_is_ready(paths.patch_pairs):
+            _print_skip_existing(paths.patch_pairs, console=console)
         else:
-            print(f"  patch pairs -> {paths.patch_pairs}")
+            if paper_results_refreshed:
+                _print_rebuild_due_to_upstream(paths.patch_pairs, console=console)
+            _log(f"  patch pairs -> {paths.patch_pairs}", console=console)
             build_reasoning_patch_pairs(
                 results_path=paths.paper_results,
                 control_slice_path=paths.robust_slice,
                 output_path=paths.patch_pairs,
             )
+            patch_pairs_refreshed = True
 
         route_patching_ready = (
             _path_is_ready(paths.route_patching_results)
@@ -439,10 +577,17 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
             and _path_is_ready(paths.route_patching_rescue_delta_margin_plot)
             and _path_is_ready(paths.route_patching_induction_delta_shortcut_prob_plot)
         )
-        if config.resume and route_patching_ready:
-            _print_skip_existing(paths.route_patching_results)
+        if (
+            not paper_results_refreshed
+            and not patch_pairs_refreshed
+            and config.resume
+            and route_patching_ready
+        ):
+            _print_skip_existing(paths.route_patching_results, console=console)
         else:
-            print(f"  route patching -> {paths.route_patching_results}")
+            if paper_results_refreshed or patch_pairs_refreshed:
+                _print_rebuild_due_to_upstream(paths.route_patching_results, console=console)
+            _log(f"  route patching -> {paths.route_patching_results}", console=console)
             run_reasoning_route_patching(
                 build_route_patching_config(
                     frozen_root=paths.frozen_root,
@@ -466,30 +611,30 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
 
     _write_run_info(config, paths, pool_manifest_path)
 
-    print("")
-    print("Reasoning replication pipeline complete.")
-    print(f"Model: {config.model_name}")
-    print(f"Frozen root: {paths.frozen_root}")
-    print(f"Control-only results: {paths.control_results}")
-    print(f"Control-robust slice: {paths.robust_slice}")
-    print(f"Paper-slice manifest: {paths.paper_manifest}")
-    print(f"Paper-slice results: {paths.paper_results}")
+    _log("", console=console)
+    _log("Reasoning replication pipeline complete.", console=console)
+    _log(f"Model: {config.model_name}", console=console)
+    _log(f"Frozen root: {paths.frozen_root}", console=console)
+    _log(f"Control-only results: {paths.control_results}", console=console)
+    _log(f"Control-robust slice: {paths.robust_slice}", console=console)
+    _log(f"Paper-slice manifest: {paths.paper_manifest}", console=console)
+    _log(f"Paper-slice results: {paths.paper_results}", console=console)
     if config.skip_probes:
-        print("Probe outputs: skipped")
+        _log("Probe outputs: skipped", console=console)
     else:
-        print(f"Probe hidden states: {paths.probe_hidden_states}")
-        print(f"Probe dataset: {paths.probe_dataset}")
-        print(f"Probe metrics JSONL: {paths.probe_metrics_jsonl}")
-        print(f"Probe metrics CSV: {paths.probe_metrics_csv}")
-        print(f"Probe summary: {paths.probe_summary_txt}")
+        _log(f"Probe hidden states: {paths.probe_hidden_states}", console=console)
+        _log(f"Probe dataset: {paths.probe_dataset}", console=console)
+        _log(f"Probe metrics JSONL: {paths.probe_metrics_jsonl}", console=console)
+        _log(f"Probe metrics CSV: {paths.probe_metrics_csv}", console=console)
+        _log(f"Probe summary: {paths.probe_summary_txt}", console=console)
     if config.skip_patching:
-        print("Route patching outputs: skipped")
+        _log("Route patching outputs: skipped", console=console)
     else:
-        print(f"Patch pairs: {paths.patch_pairs}")
-        print(f"Route patching results: {paths.route_patching_results}")
-        print(f"Route patching summary TXT: {paths.route_patching_summary_txt}")
-        print(f"Route patching summary CSV: {paths.route_patching_summary_csv}")
-    print(f"Run info: {paths.run_info_txt}")
+        _log(f"Patch pairs: {paths.patch_pairs}", console=console)
+        _log(f"Route patching results: {paths.route_patching_results}", console=console)
+        _log(f"Route patching summary TXT: {paths.route_patching_summary_txt}", console=console)
+        _log(f"Route patching summary CSV: {paths.route_patching_summary_csv}", console=console)
+    _log(f"Run info: {paths.run_info_txt}", console=console)
     return paths
 
 

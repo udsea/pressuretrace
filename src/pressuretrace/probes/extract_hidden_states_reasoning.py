@@ -48,7 +48,7 @@ class ReasoningProbeExtractionConfig:
     thinking_mode: str = REASONING_V2_THINKING_MODE
     layers: tuple[int, ...] = REASONING_PROBE_LAYERS
     representations: tuple[str, ...] = REASONING_PROBE_REPRESENTATIONS
-    progress_every: int = 25
+    progress_every: int = 5
 
 
 def default_reasoning_probe_extraction_config() -> ReasoningProbeExtractionConfig:
@@ -116,6 +116,16 @@ def _load_model_and_tokenizer(model_name: str) -> tuple[Any, Any]:
     )
     model.eval()
     return model, tokenizer
+
+
+def _summarize_model_devices(model: Any) -> str:
+    """Render a compact summary of where the model lives."""
+
+    if hasattr(model, "hf_device_map"):
+        device_map = model.hf_device_map
+        counts = Counter(str(device) for device in device_map.values())
+        return ", ".join(f"{device}={count}" for device, count in sorted(counts.items()))
+    return str(model_input_device(model))
 
 
 def _select_prompt(manifest_row: dict[str, Any], result_row: dict[str, Any]) -> str:
@@ -255,7 +265,14 @@ def extract_reasoning_hidden_states(
         thinking_mode=config.thinking_mode,
     )
     if not selected_rows:
-        raise ValueError("No eligible reasoning rows were found for hidden-state extraction.")
+        pressure_counts = Counter(str(row.get("pressure_type", "")) for row in result_rows)
+        route_counts = Counter(str(row.get("route_label", "")) for row in result_rows)
+        raise ValueError(
+            "No eligible reasoning rows were found for hidden-state extraction. "
+            f"results_path={config.results_path}; "
+            f"pressure_counts={dict(pressure_counts)}; "
+            f"route_counts={dict(route_counts)}"
+        )
 
     eligible_count = len(selected_rows)
     pressure_counts = Counter(str(row["pressure_type"]) for row in selected_rows)
@@ -265,6 +282,23 @@ def extract_reasoning_hidden_states(
 
     output_path = prepare_results_file(config.output_path)
     model, tokenizer = _load_model_and_tokenizer(config.model_name)
+    print(f"Eligible rows: {eligible_count}", flush=True)
+    print(
+        "Per-pressure counts: "
+        + ", ".join(
+            f"{pressure_type}={pressure_counts.get(pressure_type, 0)}"
+            for pressure_type in REASONING_PROBE_PRESSURE_TYPES
+        ),
+        flush=True,
+    )
+    print(
+        "Per-label counts: "
+        + ", ".join(f"{label}={label_counts.get(label, 0)}" for label in (0, 1)),
+        flush=True,
+    )
+    print("Layers: " + ", ".join(str(layer) for layer in config.layers), flush=True)
+    print("Representations: " + ", ".join(config.representations), flush=True)
+    print("Model device placement: " + _summarize_model_devices(model), flush=True)
 
     rows_written = 0
     started_at = time.perf_counter()
@@ -340,22 +374,11 @@ def extract_reasoning_hidden_states(
                 print(
                     f"[{index}/{eligible_count}] hidden-state extraction "
                     f"{row['task_id']} -> {rows_written} rows "
-                    f"({elapsed_minutes:.1f}m elapsed)"
+                    f"({elapsed_minutes:.1f}m elapsed)",
+                    flush=True,
                 )
 
-    print(f"Eligible rows: {eligible_count}")
-    print(
-        "Per-pressure counts: "
-        + ", ".join(
-            f"{pressure_type}={pressure_counts.get(pressure_type, 0)}"
-            for pressure_type in REASONING_PROBE_PRESSURE_TYPES
-        )
-    )
-    print(
-        "Per-label counts: "
-        + ", ".join(f"{label}={label_counts.get(label, 0)}" for label in (0, 1))
-    )
-    print(f"Hidden-state rows written: {rows_written}")
+    print(f"Hidden-state rows written: {rows_written}", flush=True)
 
     return output_path
 

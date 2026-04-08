@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -205,6 +206,20 @@ def _build_generation_config(
     return generation_config
 
 
+def _cuda_torch_dtype() -> torch.dtype:
+    """Choose the CUDA dtype, allowing explicit override for replication runs."""
+
+    requested = os.environ.get("PRESSURETRACE_TORCH_DTYPE", "").strip().lower()
+    if requested in {"", "bf16", "bfloat16"}:
+        return torch.bfloat16
+    if requested in {"fp16", "float16"}:
+        return torch.float16
+    raise ValueError(
+        "Unsupported PRESSURETRACE_TORCH_DTYPE value "
+        f"{requested!r}. Expected one of: bf16, bfloat16, fp16, float16."
+    )
+
+
 def _pipeline_load_kwargs() -> dict[str, Any]:
     """Choose conservative pipeline load settings for the current device."""
 
@@ -213,7 +228,7 @@ def _pipeline_load_kwargs() -> dict[str, Any]:
         model_kwargs["torch_dtype"] = torch.float16
         return {"device": torch.device("mps"), "model_kwargs": model_kwargs}
     if torch.cuda.is_available():
-        model_kwargs["torch_dtype"] = torch.bfloat16
+        model_kwargs["torch_dtype"] = _cuda_torch_dtype()
         return {"device_map": "auto", "model_kwargs": model_kwargs}
     model_kwargs["torch_dtype"] = torch.float32
     return {"device": torch.device("cpu"), "model_kwargs": model_kwargs}
@@ -227,7 +242,7 @@ def _manual_model_load_kwargs() -> dict[str, Any]:
         load_kwargs["torch_dtype"] = torch.float16
         return load_kwargs
     if torch.cuda.is_available():
-        load_kwargs["torch_dtype"] = torch.bfloat16
+        load_kwargs["torch_dtype"] = _cuda_torch_dtype()
         load_kwargs["device_map"] = "auto"
         return load_kwargs
     load_kwargs["torch_dtype"] = torch.float32
@@ -286,12 +301,13 @@ def load_reasoning_generator(
     """Load and cache a text-generation backend for reasoning pilots."""
 
     if profile.backend == "manual_qwen3":
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
+            trust_remote_code=True,
             **_manual_model_load_kwargs(),
         )
         return ManualReasoningGenerator(
@@ -304,6 +320,7 @@ def load_reasoning_generator(
         "text-generation",
         model=model_name,
         tokenizer=model_name,
+        trust_remote_code=True,
         **_pipeline_load_kwargs(),
     )
     pipeline_tokenizer: Any = generator.tokenizer

@@ -13,6 +13,7 @@ from pressuretrace.behavior.reasoning_runtime import (
     ReasoningGenerationProfile,
     build_reasoning_messages,
     generation_profile_for_reasoning_v2,
+    is_qwen3_model,
     manual_model_load_kwargs,
     model_input_device,
 )
@@ -22,6 +23,7 @@ from pressuretrace.behavior.reasoning_runtime import (
 class ReasoningPatchingBundle:
     """Loaded model/tokenizer bundle for prompt-level reasoning patching."""
 
+    model_name: str
     model: Any
     tokenizer: Any
     profile: ReasoningGenerationProfile
@@ -63,11 +65,9 @@ def load_model_and_tokenizer(
     thinking_mode: str = "off",
     trust_remote_code: bool = True,
 ) -> ReasoningPatchingBundle:
-    """Load the Qwen3 reasoning model and tokenizer for patching."""
+    """Load the reasoning model and tokenizer bundle used for route patching."""
 
     profile = generation_profile_for_reasoning_v2(model_name, thinking_mode)
-    if profile.backend != "manual_qwen3":
-        raise ValueError("Reasoning route patching currently supports only Qwen3 models.")
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
@@ -83,6 +83,7 @@ def load_model_and_tokenizer(
     )
     model.eval()
     return ReasoningPatchingBundle(
+        model_name=model_name,
         model=model,
         tokenizer=tokenizer,
         profile=profile,
@@ -129,13 +130,22 @@ def _render_prompt_text(bundle: ReasoningPatchingBundle, prompt: str) -> str:
 
     messages = build_reasoning_messages(prompt=prompt, system_prompt=bundle.system_prompt)
     if not hasattr(bundle.tokenizer, "apply_chat_template"):
-        raise ValueError("Tokenizer does not support chat templates required for Qwen3.")
+        raise ValueError("Tokenizer does not support chat templates required for route patching.")
+
+    if is_qwen3_model(bundle.model_name):
+        return str(
+            bundle.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=bundle.profile.enable_thinking,
+            )
+        )
     return str(
         bundle.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=bundle.profile.enable_thinking,
         )
     )
 

@@ -104,10 +104,14 @@ def _build_chat_prompt(
 def _load_model_and_tokenizer(model_name: str) -> tuple[Any, Any]:
     """Load the model/tokenizer pair used to reproduce prompt hidden states."""
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    model = AutoModelForCausalLM.from_pretrained(model_name, **manual_model_load_kwargs())
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        **manual_model_load_kwargs(),
+    )
     model.eval()
     return model, tokenizer
 

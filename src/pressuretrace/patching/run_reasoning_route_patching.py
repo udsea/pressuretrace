@@ -224,7 +224,7 @@ def _summarize_model_devices(model: Any) -> str:
         )
     try:
         return str(next(model.parameters()).device)
-    except StopIteration:  # pragma: no cover - defensive fallback
+    except (AttributeError, StopIteration, TypeError):  # pragma: no cover - defensive fallback
         return "unknown"
 
 

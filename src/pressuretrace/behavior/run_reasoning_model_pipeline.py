@@ -16,21 +16,23 @@ from pressuretrace.behavior.run_reasoning_control_only import run_reasoning_cont
 from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
     build_reasoning_all_valid_transforms_v2,
 )
+from pressuretrace.patching.build_reasoning_patch_pairs import build_reasoning_patch_pairs
+from pressuretrace.patching.run_reasoning_route_patching import (
+    build_route_patching_config,
+    run_reasoning_route_patching,
+)
 from pressuretrace.paths import manifests_dir, repo_root
 from pressuretrace.probes.build_reasoning_probe_dataset import build_reasoning_probe_dataset
 from pressuretrace.probes.extract_hidden_states_reasoning import (
     ReasoningProbeExtractionConfig,
     extract_reasoning_hidden_states,
 )
-from pressuretrace.probes.train_reasoning_probes import (
-    ProbeTrainingConfig,
-    train_reasoning_probes,
-)
+from pressuretrace.probes.train_reasoning_probes import ProbeTrainingConfig, train_reasoning_probes
 from pressuretrace.utils.io import ensure_directory, read_jsonl
 
 SUPPORTED_REPLICATION_MODELS: tuple[str, ...] = (
-    "Qwen/Qwen2.5-7B-Instruct",
-    "meta-llama/Llama-3.1-8B-Instruct",
+    "google/gemma-3-27b-it",
+    "sarvamai/sarvam-30b",
 )
 
 
@@ -49,6 +51,13 @@ class ReasoningReplicationPaths:
     probe_metrics_jsonl: Path
     probe_metrics_csv: Path
     probe_summary_txt: Path
+    patch_pairs: Path
+    route_patching_results: Path
+    route_patching_summary_txt: Path
+    route_patching_summary_csv: Path
+    route_patching_rescue_delta_gold_prob_plot: Path
+    route_patching_rescue_delta_margin_plot: Path
+    route_patching_induction_delta_shortcut_prob_plot: Path
     run_info_txt: Path
 
 
@@ -62,6 +71,7 @@ class ReasoningModelPipelineConfig:
     split: str = "test"
     limit: int | None = None
     skip_probes: bool = False
+    skip_patching: bool = False
     reuse_pool: bool = True
     show_progress: bool = True
 
@@ -97,6 +107,23 @@ def reasoning_replication_paths(
         probe_metrics_jsonl=results_root / f"reasoning_probe_metrics_{suffix}.jsonl",
         probe_metrics_csv=results_root / f"reasoning_probe_metrics_{suffix}.csv",
         probe_summary_txt=results_root / f"reasoning_probe_summary_{suffix}.txt",
+        patch_pairs=results_root / f"reasoning_patch_pairs_{suffix}.jsonl",
+        route_patching_results=results_root / f"reasoning_route_patching_{suffix}.jsonl",
+        route_patching_summary_txt=(
+            results_root / f"reasoning_route_patching_summary_{suffix}.txt"
+        ),
+        route_patching_summary_csv=(
+            results_root / f"reasoning_route_patching_summary_{suffix}.csv"
+        ),
+        route_patching_rescue_delta_gold_prob_plot=(
+            results_root / f"reasoning_route_patching_rescue_delta_gold_prob_{suffix}.png"
+        ),
+        route_patching_rescue_delta_margin_plot=(
+            results_root / f"reasoning_route_patching_rescue_delta_margin_{suffix}.png"
+        ),
+        route_patching_induction_delta_shortcut_prob_plot=(
+            results_root / f"reasoning_route_patching_induction_delta_shortcut_prob_{suffix}.png"
+        ),
         run_info_txt=frozen_root / "RUN_INFO.txt",
     )
 
@@ -204,7 +231,21 @@ def _write_run_info(
         f"probe_metrics_jsonl={paths.probe_metrics_jsonl}",
         f"probe_metrics_csv={paths.probe_metrics_csv}",
         f"probe_summary={paths.probe_summary_txt}",
+        f"patch_pairs={paths.patch_pairs}",
+        f"route_patching_results={paths.route_patching_results}",
+        f"route_patching_summary_txt={paths.route_patching_summary_txt}",
+        f"route_patching_summary_csv={paths.route_patching_summary_csv}",
+        (
+            "route_patching_rescue_delta_gold_prob_plot="
+            f"{paths.route_patching_rescue_delta_gold_prob_plot}"
+        ),
+        f"route_patching_rescue_delta_margin_plot={paths.route_patching_rescue_delta_margin_plot}",
+        (
+            "route_patching_induction_delta_shortcut_prob_plot="
+            f"{paths.route_patching_induction_delta_shortcut_prob_plot}"
+        ),
         f"skip_probes={config.skip_probes}",
+        f"skip_patching={config.skip_patching}",
         f"reuse_pool={config.reuse_pool}",
     ]
     paths.run_info_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -218,6 +259,12 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
         raise ValueError(
             "Reasoning replication pipeline currently supports "
             "thinking_mode='off' only."
+        )
+    if config.model_name not in SUPPORTED_REPLICATION_MODELS:
+        supported = ", ".join(SUPPORTED_REPLICATION_MODELS)
+        raise ValueError(
+            f"Unsupported replication model '{config.model_name}'. "
+            f"Supported models: {supported}."
         )
 
     _prepare_frozen_directories(
@@ -234,7 +281,7 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
     print(f"Frozen root: {paths.frozen_root}")
     print(f"Transformed pool: {pool_manifest_path}")
 
-    print("Stage 1/5: control-only run")
+    print("Stage 1/6: control-only run")
     run_reasoning_control_only(
         manifest_path=pool_manifest_path,
         model_name=config.model_name,
@@ -243,20 +290,20 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
         show_progress=config.show_progress,
     )
 
-    print("Stage 2/5: build control-robust slice")
+    print("Stage 2/6: build control-robust slice")
     build_control_robust_slice(
         control_results_path=paths.control_results,
         output_path=paths.robust_slice,
     )
 
-    print("Stage 3/5: materialize paper slice")
+    print("Stage 3/6: materialize paper slice")
     materialize_reasoning_slice(
         manifest_path=pool_manifest_path,
         slice_path=paths.robust_slice,
         output_path=paths.paper_manifest,
     )
 
-    print("Stage 4/5: run paper slice")
+    print("Stage 4/6: run paper slice")
     run_reasoning_manifest_v2(
         manifest_path=paths.paper_manifest,
         model_name=config.model_name,
@@ -268,9 +315,9 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
     )
 
     if config.skip_probes:
-        print("Stage 5/5: probe pipeline skipped")
+        print("Stage 5/6: probe pipeline skipped")
     else:
-        print("Stage 5/5: run probe pipeline")
+        print("Stage 5/6: run probe pipeline")
         extract_reasoning_hidden_states(
             ReasoningProbeExtractionConfig(
                 manifest_path=paths.paper_manifest,
@@ -293,6 +340,36 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
         )
         _write_probe_metrics_csv(paths.probe_metrics_jsonl, paths.probe_metrics_csv)
 
+    if config.skip_patching:
+        print("Stage 6/6: route patching skipped")
+    else:
+        print("Stage 6/6: run route patching")
+        build_reasoning_patch_pairs(
+            results_path=paths.paper_results,
+            control_slice_path=paths.robust_slice,
+            output_path=paths.patch_pairs,
+        )
+        run_reasoning_route_patching(
+            build_route_patching_config(
+                frozen_root=paths.frozen_root,
+                manifest_path=paths.paper_manifest,
+                results_path=paths.paper_results,
+                patch_pairs_path=paths.patch_pairs,
+                output_path=paths.route_patching_results,
+                summary_txt_path=paths.route_patching_summary_txt,
+                summary_csv_path=paths.route_patching_summary_csv,
+                rescue_delta_gold_prob_plot_path=(
+                    paths.route_patching_rescue_delta_gold_prob_plot
+                ),
+                rescue_delta_margin_plot_path=paths.route_patching_rescue_delta_margin_plot,
+                induction_delta_shortcut_prob_plot_path=(
+                    paths.route_patching_induction_delta_shortcut_prob_plot
+                ),
+                model_name=config.model_name,
+                thinking_mode=config.thinking_mode,
+            )
+        )
+
     _write_run_info(config, paths, pool_manifest_path)
 
     print("")
@@ -311,6 +388,13 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
         print(f"Probe metrics JSONL: {paths.probe_metrics_jsonl}")
         print(f"Probe metrics CSV: {paths.probe_metrics_csv}")
         print(f"Probe summary: {paths.probe_summary_txt}")
+    if config.skip_patching:
+        print("Route patching outputs: skipped")
+    else:
+        print(f"Patch pairs: {paths.patch_pairs}")
+        print(f"Route patching results: {paths.route_patching_results}")
+        print(f"Route patching summary TXT: {paths.route_patching_summary_txt}")
+        print(f"Route patching summary CSV: {paths.route_patching_summary_csv}")
     print(f"Run info: {paths.run_info_txt}")
     return paths
 
@@ -325,7 +409,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"Validated target models: {supported_models}."
         ),
     )
-    parser.add_argument("model_name", help="Model to replicate, e.g. Qwen/Qwen2.5-7B-Instruct.")
+    parser.add_argument("model_name", help="Model to replicate, e.g. google/gemma-3-27b-it.")
     parser.add_argument(
         "--thinking",
         dest="thinking_mode",
@@ -347,6 +431,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--skip-probes",
         action="store_true",
         help="Skip hidden-state extraction and probe training.",
+    )
+    parser.add_argument(
+        "--skip-patching",
+        action="store_true",
+        help="Skip patch-pair construction and route patching.",
     )
     parser.add_argument(
         "--reuse-pool",
@@ -381,6 +470,7 @@ def main(argv: list[str] | None = None) -> Path:
             split=args.split,
             limit=args.limit,
             skip_probes=args.skip_probes,
+            skip_patching=args.skip_patching,
             reuse_pool=args.reuse_pool,
             show_progress=args.show_progress,
         )

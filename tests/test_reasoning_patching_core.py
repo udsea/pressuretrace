@@ -33,7 +33,7 @@ class _FakeTokenizer:
         *,
         tokenize: bool,
         add_generation_prompt: bool,
-        enable_thinking: bool,
+        enable_thinking: bool | None = None,
     ) -> str:
         self.apply_calls.append(
             {
@@ -138,6 +138,25 @@ def _bundle() -> ReasoningPatchingBundle:
         enable_thinking=False,
     )
     return ReasoningPatchingBundle(
+        model_name="Qwen/Qwen3-14B",
+        model=model,
+        tokenizer=tokenizer,
+        profile=profile,
+        input_device=torch.device("cpu"),
+    )
+
+
+def _non_qwen_bundle() -> ReasoningPatchingBundle:
+    tokenizer = _FakeTokenizer()
+    model = _DummyModel()
+    profile = ReasoningGenerationProfile(
+        backend="pipeline_chat",
+        do_sample=False,
+        max_new_tokens=64,
+        enable_thinking=None,
+    )
+    return ReasoningPatchingBundle(
+        model_name="Qwen/Qwen2.5-7B-Instruct",
         model=model,
         tokenizer=tokenizer,
         profile=profile,
@@ -155,6 +174,16 @@ class ReasoningPatchingCoreTestCase(unittest.TestCase):
         self.assertIn("system::", prompt_inputs.rendered_prompt)
         self.assertEqual(len(bundle.tokenizer.apply_calls), 1)
         self.assertIs(bundle.tokenizer.apply_calls[0]["enable_thinking"], False)
+
+    def test_build_model_inputs_supports_non_qwen3_chat_templates(self) -> None:
+        bundle = _non_qwen_bundle()
+
+        prompt_inputs = build_model_inputs(bundle, "Question: 1+1?")
+
+        self.assertIsInstance(prompt_inputs, PromptInputs)
+        self.assertEqual(prompt_inputs.final_token_index, 3)
+        self.assertEqual(len(bundle.tokenizer.apply_calls), 1)
+        self.assertIsNone(bundle.tokenizer.apply_calls[0]["enable_thinking"])
 
     def test_ensure_single_token_answer_rejects_multi_token_answers(self) -> None:
         tokenizer = _FakeTokenizer()

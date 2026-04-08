@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ class ReasoningProbeExtractionConfig:
     thinking_mode: str = REASONING_V2_THINKING_MODE
     layers: tuple[int, ...] = REASONING_PROBE_LAYERS
     representations: tuple[str, ...] = REASONING_PROBE_REPRESENTATIONS
+    progress_every: int = 25
 
 
 def default_reasoning_probe_extraction_config() -> ReasoningProbeExtractionConfig:
@@ -265,8 +267,9 @@ def extract_reasoning_hidden_states(
     model, tokenizer = _load_model_and_tokenizer(config.model_name)
 
     rows_written = 0
+    started_at = time.perf_counter()
     with torch.no_grad():
-        for row in selected_rows:
+        for index, row in enumerate(selected_rows, start=1):
             prompt_text = _build_chat_prompt(
                 tokenizer=tokenizer,
                 prompt=str(row["prompt"]),
@@ -329,6 +332,16 @@ def extract_reasoning_hidden_states(
                     }
                     append_jsonl(output_path, output_row)
                     rows_written += 1
+            if (
+                config.progress_every > 0
+                and (index % config.progress_every == 0 or index == eligible_count)
+            ):
+                elapsed_minutes = (time.perf_counter() - started_at) / 60
+                print(
+                    f"[{index}/{eligible_count}] hidden-state extraction "
+                    f"{row['task_id']} -> {rows_written} rows "
+                    f"({elapsed_minutes:.1f}m elapsed)"
+                )
 
     print(f"Eligible rows: {eligible_count}")
     print(

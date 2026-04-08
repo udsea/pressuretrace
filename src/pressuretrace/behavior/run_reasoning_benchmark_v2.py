@@ -26,6 +26,7 @@ from pressuretrace.behavior.reasoning_runtime import (
     default_results_path,
     generation_profile_for_reasoning_v2,
     infer_reasoning_response,
+    infer_reasoning_responses,
     load_reasoning_generator,
     validate_thinking_mode,
 )
@@ -116,6 +117,25 @@ def infer_reasoning_model_v2(
     )
 
 
+def infer_reasoning_model_batch_v2(
+    prompts: list[str],
+    model_name: str,
+    thinking_mode: str,
+    *,
+    batch_size: int,
+) -> list[str]:
+    """Run a batch of reasoning prompts through the selected v2 model backend."""
+
+    return infer_reasoning_responses(
+        prompts=prompts,
+        model_name=model_name,
+        profile=_generation_profile_for_model_v2(model_name, thinking_mode),
+        strip_qwen3_thinking=False,
+        system_prompt=STRICT_INTEGER_SYSTEM_PROMPT,
+        batch_size=batch_size,
+    )
+
+
 def _run_reasoning_manifest_rows_v2(
     manifest_destination: Path,
     manifest_rows: list[dict[str, Any]],
@@ -126,6 +146,7 @@ def _run_reasoning_manifest_rows_v2(
     validated_thinking_mode: ThinkingMode,
     console: Console | None,
     show_progress: bool,
+    batch_size: int,
 ) -> ReasoningPilotArtifactsV2:
     """Run inference over an already selected set of reasoning v2 manifest rows."""
 
@@ -154,6 +175,7 @@ def _run_reasoning_manifest_rows_v2(
         )
         console.print(f"Conditions: {count_summary}")
         console.print(f"Results path: [bold]{results_path}[/bold]")
+        console.print(f"Inference batch size: [bold]{batch_size}[/bold]")
         if dry_run:
             console.print("[bold]Step 3/3[/bold] Writing placeholder rows.")
         else:
@@ -182,91 +204,115 @@ def _run_reasoning_manifest_rows_v2(
 
     row_count = 0
     total_duration_seconds = 0.0
+    inference_batch_size = max(1, batch_size)
+    generation_profile = _generation_profile_for_model_v2(model_name, validated_thinking_mode)
     try:
-        for index, row in enumerate(manifest_rows, start=1):
+        for batch_start in range(0, len(manifest_rows), inference_batch_size):
+            batch_rows = manifest_rows[batch_start : batch_start + inference_batch_size]
+            batch_end = batch_start + len(batch_rows)
             if progress is not None and progress_task_id is not None:
+                batch_label = (
+                    f"[{batch_rows[0]['pressure_type']}] {batch_rows[0]['task_id']}"
+                    if len(batch_rows) == 1
+                    else f"batch {batch_start + 1}-{batch_end}"
+                )
                 progress.update(
                     progress_task_id,
-                    description=(
-                        f"[{row['pressure_type']}] {row['task_id']} ({index}/{len(manifest_rows)})"
-                    ),
+                    description=f"{batch_label} ({batch_end}/{len(manifest_rows)})",
                 )
 
             if dry_run:
+                for row in batch_rows:
+                    result_row = {
+                        **row,
+                        "model_name": model_name,
+                        "model_response": "",
+                        "normalized_response": "",
+                        "answer_visible_response": "",
+                        "parsed_answer": None,
+                        "selected_candidate": None,
+                        "parse_candidates": [],
+                        "parse_status": "failed",
+                        "parse_confidence": "none",
+                        "thinking_block_detected": False,
+                        "thinking_mode": validated_thinking_mode,
+                        "response_length_chars": 0,
+                        "route_label": "pending_inference",
+                        "failure_subtype": None,
+                        "is_correct": False,
+                        "duration_seconds": None,
+                    }
+                    append_jsonl(results_path, result_row)
+                    row_count += 1
+                    if progress is not None and progress_task_id is not None:
+                        progress.advance(progress_task_id)
+                continue
+
+            batch_prompts = [str(row["prompt"]) for row in batch_rows]
+            start_time = time.perf_counter()
+            if generation_profile.backend == "pipeline_chat" and len(batch_rows) > 1:
+                responses = infer_reasoning_model_batch_v2(
+                    prompts=batch_prompts,
+                    model_name=model_name,
+                    thinking_mode=validated_thinking_mode,
+                    batch_size=inference_batch_size,
+                )
+            else:
+                responses = [
+                    infer_reasoning_model_v2(
+                        prompt=prompt,
+                        model_name=model_name,
+                        thinking_mode=validated_thinking_mode,
+                    )
+                    for prompt in batch_prompts
+                ]
+            batch_duration_seconds = time.perf_counter() - start_time
+            per_row_duration_seconds = batch_duration_seconds / len(batch_rows)
+
+            for row, response in zip(batch_rows, responses, strict=True):
+                evaluation = evaluate_reasoning_response_v2(
+                    model_response=response,
+                    gold_answer=str(row["gold_answer"]),
+                    shortcut_answer=str(row["shortcut_answer"]),
+                    prompt_text=str(row.get("base_question", row["prompt"])),
+                )
                 result_row = {
                     **row,
                     "model_name": model_name,
-                    "model_response": "",
-                    "normalized_response": "",
-                    "answer_visible_response": "",
-                    "parsed_answer": None,
-                    "selected_candidate": None,
-                    "parse_candidates": [],
-                    "parse_status": "failed",
-                    "parse_confidence": "none",
-                    "thinking_block_detected": False,
+                    "model_response": response,
+                    "normalized_response": evaluation.normalized_response,
+                    "answer_visible_response": evaluation.answer_visible_response,
+                    "parsed_answer": evaluation.parsed_answer,
+                    "selected_candidate": evaluation.selected_candidate,
+                    "parse_candidates": evaluation.parse_candidates,
+                    "parse_status": evaluation.parse_status.value,
+                    "parse_confidence": evaluation.parse_confidence.value,
+                    "thinking_block_detected": evaluation.thinking_block_detected,
                     "thinking_mode": validated_thinking_mode,
-                    "response_length_chars": 0,
-                    "route_label": "pending_inference",
-                    "failure_subtype": None,
-                    "is_correct": False,
-                    "duration_seconds": None,
+                    "response_length_chars": evaluation.response_length_chars,
+                    "route_label": evaluation.route_label.value,
+                    "failure_subtype": (
+                        evaluation.failure_subtype.value
+                        if evaluation.failure_subtype is not None
+                        else None
+                    ),
+                    "is_correct": evaluation.is_correct,
+                    "duration_seconds": per_row_duration_seconds,
                 }
                 append_jsonl(results_path, result_row)
                 row_count += 1
+                total_duration_seconds += per_row_duration_seconds
                 if progress is not None and progress_task_id is not None:
+                    average_duration_seconds = total_duration_seconds / row_count
                     progress.advance(progress_task_id)
-                continue
-
-            start_time = time.perf_counter()
-            response = infer_reasoning_model_v2(
-                prompt=str(row["prompt"]),
-                model_name=model_name,
-                thinking_mode=validated_thinking_mode,
-            )
-            duration_seconds = time.perf_counter() - start_time
-            evaluation = evaluate_reasoning_response_v2(
-                model_response=response,
-                gold_answer=str(row["gold_answer"]),
-                shortcut_answer=str(row["shortcut_answer"]),
-                prompt_text=str(row.get("base_question", row["prompt"])),
-            )
-            result_row = {
-                **row,
-                "model_name": model_name,
-                "model_response": response,
-                "normalized_response": evaluation.normalized_response,
-                "answer_visible_response": evaluation.answer_visible_response,
-                "parsed_answer": evaluation.parsed_answer,
-                "selected_candidate": evaluation.selected_candidate,
-                "parse_candidates": evaluation.parse_candidates,
-                "parse_status": evaluation.parse_status.value,
-                "parse_confidence": evaluation.parse_confidence.value,
-                "thinking_block_detected": evaluation.thinking_block_detected,
-                "thinking_mode": validated_thinking_mode,
-                "response_length_chars": evaluation.response_length_chars,
-                "route_label": evaluation.route_label.value,
-                "failure_subtype": (
-                    evaluation.failure_subtype.value
-                    if evaluation.failure_subtype is not None
-                    else None
-                ),
-                "is_correct": evaluation.is_correct,
-                "duration_seconds": duration_seconds,
-            }
-            append_jsonl(results_path, result_row)
-            row_count += 1
-            total_duration_seconds += duration_seconds
-            if progress is not None and progress_task_id is not None:
-                average_duration_seconds = total_duration_seconds / row_count
-                progress.advance(progress_task_id)
-                progress.update(
-                    progress_task_id,
-                    description=(
-                        f"[{row['pressure_type']}] {row['task_id']} "
-                        f"({index}/{len(manifest_rows)}, avg {average_duration_seconds:.1f}s/ep)"
-                    ),
-                )
+                    progress.update(
+                        progress_task_id,
+                        description=(
+                            f"[{row['pressure_type']}] {row['task_id']} "
+                            f"({row_count}/{len(manifest_rows)}, "
+                            f"avg {average_duration_seconds:.1f}s/ep)"
+                        ),
+                    )
     finally:
         if progress is not None:
             progress.stop()
@@ -294,6 +340,7 @@ def run_reasoning_manifest_v2(
     dry_run: bool = False,
     include_control: bool = True,
     thinking_mode: str = "default",
+    batch_size: int = 1,
     console: Console | None = None,
     show_progress: bool = False,
 ) -> ReasoningPilotArtifactsV2:
@@ -324,6 +371,7 @@ def run_reasoning_manifest_v2(
         validated_thinking_mode=validated_thinking_mode,
         console=console,
         show_progress=show_progress,
+        batch_size=batch_size,
     )
 
 
@@ -337,6 +385,7 @@ def run_reasoning_pilot_v2(
     dry_run: bool = False,
     include_control: bool = True,
     thinking_mode: str = "default",
+    batch_size: int = 1,
     console: Console | None = None,
     show_progress: bool = False,
 ) -> ReasoningPilotArtifactsV2:
@@ -373,4 +422,5 @@ def run_reasoning_pilot_v2(
         validated_thinking_mode=validated_thinking_mode,
         console=console,
         show_progress=show_progress,
+        batch_size=batch_size,
     )

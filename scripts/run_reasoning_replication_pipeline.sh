@@ -43,6 +43,8 @@ HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 TRANSFORMERS_VERBOSITY="${TRANSFORMERS_VERBOSITY:-error}"
 PRESSURETRACE_TORCH_DTYPE="${PRESSURETRACE_TORCH_DTYPE:-fp16}"
+REASONING_BATCH_SIZE="${REASONING_BATCH_SIZE:-4}"
+PIPELINE_RESUME="${PIPELINE_RESUME:-1}"
 
 mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}" "${HF_XET_CACHE}" "${TMPDIR}"
 
@@ -50,7 +52,21 @@ echo "Model: ${MODEL_NAME}"
 echo "Repo root: ${REPO_ROOT}"
 echo "HF cache: ${HF_HOME}"
 echo "Torch dtype override: ${PRESSURETRACE_TORCH_DTYPE}"
+echo "Reasoning batch size: ${REASONING_BATCH_SIZE}"
+echo "Resume existing stages: ${PIPELINE_RESUME}"
 
 export HF_HOME HF_HUB_CACHE HF_XET_CACHE TMPDIR HF_HUB_DISABLE_XET
 export TOKENIZERS_PARALLELISM TRANSFORMERS_VERBOSITY PRESSURETRACE_TORCH_DTYPE
-uv run python -m pressuretrace.behavior.run_reasoning_model_pipeline "${MODEL_NAME}" "$@"
+
+ARGS=(
+  "${MODEL_NAME}"
+  --batch-size "${REASONING_BATCH_SIZE}"
+)
+if [[ "${PIPELINE_RESUME}" == "1" ]]; then
+  ARGS+=(--resume)
+else
+  ARGS+=(--no-resume)
+fi
+ARGS+=("$@")
+
+uv run python -m pressuretrace.behavior.run_reasoning_model_pipeline "${ARGS[@]}"

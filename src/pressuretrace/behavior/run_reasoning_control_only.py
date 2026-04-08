@@ -31,6 +31,7 @@ def run_reasoning_control_only(
     output_path: Path | None = None,
     dry_run: bool = False,
     thinking_mode: str = "default",
+    batch_size: int = 1,
     console: Console | None = None,
     show_progress: bool = False,
 ) -> ReasoningPilotArtifactsV2:
@@ -48,6 +49,7 @@ def run_reasoning_control_only(
         dry_run=dry_run,
         include_control=True,
         thinking_mode=thinking_mode,
+        batch_size=batch_size,
         console=console,
         show_progress=show_progress,
     )

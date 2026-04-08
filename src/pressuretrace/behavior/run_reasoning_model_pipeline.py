@@ -70,6 +70,8 @@ class ReasoningModelPipelineConfig:
     thinking_mode: str = "off"
     split: str = "test"
     limit: int | None = None
+    batch_size: int = 1
+    resume: bool = True
     skip_probes: bool = False
     skip_patching: bool = False
     reuse_pool: bool = True
@@ -209,6 +211,43 @@ def _write_probe_metrics_csv(metrics_path: Path, csv_path: Path) -> Path:
     return csv_path
 
 
+def _path_is_ready(path: Path) -> bool:
+    """Return whether an output path exists and is non-empty."""
+
+    return path.exists() and path.stat().st_size > 0
+
+
+def _count_jsonl_rows(path: Path) -> int | None:
+    """Count JSONL rows for progress reporting, returning None for unreadable files."""
+
+    try:
+        return len(read_jsonl(path))
+    except Exception:
+        return None
+
+
+def _print_stage_header(
+    stage_number: int,
+    total_stages: int,
+    label: str,
+    destination: Path,
+) -> None:
+    """Print a stable stage header with its main output path."""
+
+    print(f"Stage {stage_number}/{total_stages}: {label}")
+    print(f"  output: {destination}")
+
+
+def _print_skip_existing(path: Path) -> None:
+    """Print a concise skip-existing message."""
+
+    row_count = _count_jsonl_rows(path)
+    if row_count is None:
+        print(f"  skip existing: {path}")
+    else:
+        print(f"  skip existing: {path} ({row_count} rows)")
+
+
 def _write_run_info(
     config: ReasoningModelPipelineConfig,
     paths: ReasoningReplicationPaths,
@@ -221,6 +260,8 @@ def _write_run_info(
         f"thinking_mode={config.thinking_mode}",
         f"split={config.split}",
         f"limit={config.limit if config.limit is not None else 'all'}",
+        f"batch_size={config.batch_size}",
+        f"resume={config.resume}",
         f"transformed_pool={pool_manifest_path}",
         f"control_only_results={paths.control_results}",
         f"control_robust_slice={paths.robust_slice}",
@@ -278,97 +319,150 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
 
     print(f"Model: {config.model_name}")
     print(f"Thinking mode: {config.thinking_mode}")
+    print(f"Batch size: {config.batch_size}")
+    print(f"Resume enabled: {config.resume}")
     print(f"Frozen root: {paths.frozen_root}")
     print(f"Transformed pool: {pool_manifest_path}")
 
-    print("Stage 1/6: control-only run")
-    run_reasoning_control_only(
-        manifest_path=pool_manifest_path,
-        model_name=config.model_name,
-        output_path=paths.control_results,
-        thinking_mode=config.thinking_mode,
-        show_progress=config.show_progress,
-    )
+    _print_stage_header(1, 6, "control-only run", paths.control_results)
+    if config.resume and _path_is_ready(paths.control_results):
+        _print_skip_existing(paths.control_results)
+    else:
+        run_reasoning_control_only(
+            manifest_path=pool_manifest_path,
+            model_name=config.model_name,
+            output_path=paths.control_results,
+            thinking_mode=config.thinking_mode,
+            batch_size=config.batch_size,
+            show_progress=config.show_progress,
+        )
 
-    print("Stage 2/6: build control-robust slice")
-    build_control_robust_slice(
-        control_results_path=paths.control_results,
-        output_path=paths.robust_slice,
-    )
+    _print_stage_header(2, 6, "build control-robust slice", paths.robust_slice)
+    if config.resume and _path_is_ready(paths.robust_slice):
+        _print_skip_existing(paths.robust_slice)
+    else:
+        build_control_robust_slice(
+            control_results_path=paths.control_results,
+            output_path=paths.robust_slice,
+        )
 
-    print("Stage 3/6: materialize paper slice")
-    materialize_reasoning_slice(
-        manifest_path=pool_manifest_path,
-        slice_path=paths.robust_slice,
-        output_path=paths.paper_manifest,
-    )
+    _print_stage_header(3, 6, "materialize paper slice", paths.paper_manifest)
+    if config.resume and _path_is_ready(paths.paper_manifest):
+        _print_skip_existing(paths.paper_manifest)
+    else:
+        materialize_reasoning_slice(
+            manifest_path=pool_manifest_path,
+            slice_path=paths.robust_slice,
+            output_path=paths.paper_manifest,
+        )
 
-    print("Stage 4/6: run paper slice")
-    run_reasoning_manifest_v2(
-        manifest_path=paths.paper_manifest,
-        model_name=config.model_name,
-        pressure_type="all",
-        output_path=paths.paper_results,
-        include_control=True,
-        thinking_mode=config.thinking_mode,
-        show_progress=config.show_progress,
-    )
+    _print_stage_header(4, 6, "run paper slice", paths.paper_results)
+    if config.resume and _path_is_ready(paths.paper_results):
+        _print_skip_existing(paths.paper_results)
+    else:
+        run_reasoning_manifest_v2(
+            manifest_path=paths.paper_manifest,
+            model_name=config.model_name,
+            pressure_type="all",
+            output_path=paths.paper_results,
+            include_control=True,
+            thinking_mode=config.thinking_mode,
+            batch_size=config.batch_size,
+            show_progress=config.show_progress,
+        )
 
     if config.skip_probes:
         print("Stage 5/6: probe pipeline skipped")
     else:
         print("Stage 5/6: run probe pipeline")
-        extract_reasoning_hidden_states(
-            ReasoningProbeExtractionConfig(
-                manifest_path=paths.paper_manifest,
-                results_path=paths.paper_results,
-                output_path=paths.probe_hidden_states,
-                model_name=config.model_name,
-                thinking_mode=config.thinking_mode,
+        if config.resume and _path_is_ready(paths.probe_hidden_states):
+            _print_skip_existing(paths.probe_hidden_states)
+        else:
+            print(f"  hidden-state extraction -> {paths.probe_hidden_states}")
+            extract_reasoning_hidden_states(
+                ReasoningProbeExtractionConfig(
+                    manifest_path=paths.paper_manifest,
+                    results_path=paths.paper_results,
+                    output_path=paths.probe_hidden_states,
+                    model_name=config.model_name,
+                    thinking_mode=config.thinking_mode,
+                )
             )
-        )
-        build_reasoning_probe_dataset(
-            input_path=paths.probe_hidden_states,
-            output_path=paths.probe_dataset,
-        )
-        train_reasoning_probes(
-            ProbeTrainingConfig(
-                input_path=paths.probe_dataset,
-                metrics_path=paths.probe_metrics_jsonl,
-                summary_path=paths.probe_summary_txt,
+
+        if config.resume and _path_is_ready(paths.probe_dataset):
+            _print_skip_existing(paths.probe_dataset)
+        else:
+            print(f"  probe dataset -> {paths.probe_dataset}")
+            build_reasoning_probe_dataset(
+                input_path=paths.probe_hidden_states,
+                output_path=paths.probe_dataset,
             )
+
+        probe_metrics_ready = _path_is_ready(paths.probe_metrics_jsonl) and _path_is_ready(
+            paths.probe_summary_txt
         )
-        _write_probe_metrics_csv(paths.probe_metrics_jsonl, paths.probe_metrics_csv)
+        if config.resume and probe_metrics_ready and _path_is_ready(paths.probe_metrics_csv):
+            _print_skip_existing(paths.probe_metrics_jsonl)
+        else:
+            if config.resume and probe_metrics_ready:
+                print(f"  regenerate probe metrics CSV -> {paths.probe_metrics_csv}")
+            else:
+                print(f"  probe training -> {paths.probe_metrics_jsonl}")
+                train_reasoning_probes(
+                    ProbeTrainingConfig(
+                        input_path=paths.probe_dataset,
+                        metrics_path=paths.probe_metrics_jsonl,
+                        summary_path=paths.probe_summary_txt,
+                    )
+                )
+            _write_probe_metrics_csv(paths.probe_metrics_jsonl, paths.probe_metrics_csv)
 
     if config.skip_patching:
         print("Stage 6/6: route patching skipped")
     else:
         print("Stage 6/6: run route patching")
-        build_reasoning_patch_pairs(
-            results_path=paths.paper_results,
-            control_slice_path=paths.robust_slice,
-            output_path=paths.patch_pairs,
-        )
-        run_reasoning_route_patching(
-            build_route_patching_config(
-                frozen_root=paths.frozen_root,
-                manifest_path=paths.paper_manifest,
+        if config.resume and _path_is_ready(paths.patch_pairs):
+            _print_skip_existing(paths.patch_pairs)
+        else:
+            print(f"  patch pairs -> {paths.patch_pairs}")
+            build_reasoning_patch_pairs(
                 results_path=paths.paper_results,
-                patch_pairs_path=paths.patch_pairs,
-                output_path=paths.route_patching_results,
-                summary_txt_path=paths.route_patching_summary_txt,
-                summary_csv_path=paths.route_patching_summary_csv,
-                rescue_delta_gold_prob_plot_path=(
-                    paths.route_patching_rescue_delta_gold_prob_plot
-                ),
-                rescue_delta_margin_plot_path=paths.route_patching_rescue_delta_margin_plot,
-                induction_delta_shortcut_prob_plot_path=(
-                    paths.route_patching_induction_delta_shortcut_prob_plot
-                ),
-                model_name=config.model_name,
-                thinking_mode=config.thinking_mode,
+                control_slice_path=paths.robust_slice,
+                output_path=paths.patch_pairs,
             )
+
+        route_patching_ready = (
+            _path_is_ready(paths.route_patching_results)
+            and _path_is_ready(paths.route_patching_summary_txt)
+            and _path_is_ready(paths.route_patching_summary_csv)
+            and _path_is_ready(paths.route_patching_rescue_delta_gold_prob_plot)
+            and _path_is_ready(paths.route_patching_rescue_delta_margin_plot)
+            and _path_is_ready(paths.route_patching_induction_delta_shortcut_prob_plot)
         )
+        if config.resume and route_patching_ready:
+            _print_skip_existing(paths.route_patching_results)
+        else:
+            print(f"  route patching -> {paths.route_patching_results}")
+            run_reasoning_route_patching(
+                build_route_patching_config(
+                    frozen_root=paths.frozen_root,
+                    manifest_path=paths.paper_manifest,
+                    results_path=paths.paper_results,
+                    patch_pairs_path=paths.patch_pairs,
+                    output_path=paths.route_patching_results,
+                    summary_txt_path=paths.route_patching_summary_txt,
+                    summary_csv_path=paths.route_patching_summary_csv,
+                    rescue_delta_gold_prob_plot_path=(
+                        paths.route_patching_rescue_delta_gold_prob_plot
+                    ),
+                    rescue_delta_margin_plot_path=paths.route_patching_rescue_delta_margin_plot,
+                    induction_delta_shortcut_prob_plot_path=(
+                        paths.route_patching_induction_delta_shortcut_prob_plot
+                    ),
+                    model_name=config.model_name,
+                    thinking_mode=config.thinking_mode,
+                )
+            )
 
     _write_run_info(config, paths, pool_manifest_path)
 
@@ -428,6 +522,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", default="test", help="Dataset split for the transformed pool.")
     parser.add_argument("--limit", type=int, default=None, help="Optional retained-task cap.")
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Prompt batch size for non-Qwen3 reasoning inference. Default: 1.",
+    )
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip stages whose expected outputs already exist and are non-empty.",
+    )
+    parser.add_argument(
         "--skip-probes",
         action="store_true",
         help="Skip hidden-state extraction and probe training.",
@@ -469,6 +575,8 @@ def main(argv: list[str] | None = None) -> Path:
             thinking_mode=args.thinking_mode,
             split=args.split,
             limit=args.limit,
+            batch_size=args.batch_size,
+            resume=args.resume,
             skip_probes=args.skip_probes,
             skip_patching=args.skip_patching,
             reuse_pool=args.reuse_pool,

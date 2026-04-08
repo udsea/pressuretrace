@@ -137,6 +137,16 @@ def build_reasoning_messages(prompt: str, system_prompt: str) -> list[dict[str, 
     ]
 
 
+def _extract_pipeline_response(generated: Any) -> str:
+    """Normalize one pipeline-generated response into plain assistant text."""
+
+    if isinstance(generated, list):
+        final_message = generated[-1]
+        if isinstance(final_message, dict):
+            return str(final_message.get("content", "")).strip()
+    return str(generated).strip()
+
+
 def validate_thinking_mode(thinking_mode: str) -> ThinkingMode:
     """Validate and normalize the requested thinking mode."""
 
@@ -380,8 +390,58 @@ def infer_reasoning_response(
     ]
     outputs = generator(messages)
     generated = outputs[0]["generated_text"]
-    if isinstance(generated, list):
-        final_message = generated[-1]
-        if isinstance(final_message, dict):
-            return str(final_message.get("content", "")).strip()
-    return str(generated).strip()
+    return _extract_pipeline_response(generated)
+
+
+def infer_reasoning_responses(
+    prompts: list[str],
+    model_name: str,
+    profile: ReasoningGenerationProfile,
+    *,
+    strip_qwen3_thinking: bool,
+    system_prompt: str = SYSTEM_PROMPT,
+    batch_size: int = 1,
+) -> list[str]:
+    """Run a batch of reasoning prompts through the selected model backend."""
+
+    if not prompts:
+        return []
+
+    generator = load_reasoning_generator(model_name, profile)
+    if isinstance(generator, ManualReasoningGenerator):
+        responses: list[str] = []
+        for prompt in prompts:
+            model_inputs = prepare_manual_reasoning_inputs(
+                generator,
+                prompt,
+                system_prompt=system_prompt,
+            )
+            with torch.inference_mode():
+                generated_ids = generator.model.generate(
+                    **model_inputs,
+                    do_sample=generator.profile.do_sample,
+                    max_new_tokens=generator.profile.max_new_tokens,
+                    temperature=generator.profile.temperature,
+                    top_p=generator.profile.top_p,
+                    top_k=generator.profile.top_k,
+                    min_p=generator.profile.min_p,
+                    pad_token_id=generator.tokenizer.pad_token_id,
+                    eos_token_id=generator.tokenizer.eos_token_id,
+                )
+            output_ids = generated_ids[0][model_inputs["input_ids"].shape[1] :]
+            response = generator.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+            if strip_qwen3_thinking:
+                response = strip_qwen3_thinking_content(response)
+            responses.append(response)
+        return responses
+
+    messages_batch = [
+        build_reasoning_messages(prompt=prompt, system_prompt=system_prompt)
+        for prompt in prompts
+    ]
+    outputs = generator(messages_batch, batch_size=batch_size)
+    batched_responses: list[str] = []
+    for output in outputs:
+        generated = output["generated_text"]
+        batched_responses.append(_extract_pipeline_response(generated))
+    return batched_responses

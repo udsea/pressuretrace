@@ -207,6 +207,136 @@ class RunReasoningModelPipelineTestCase(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_reasoning_model_pipeline(config)
 
+    def test_pipeline_resumes_by_skipping_existing_stage_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            frozen_root = Path(tempdir) / "reasoning_v2_google-gemma-3-27b-it_off"
+            manifests_root = frozen_root / "data" / "manifests"
+            splits_root = frozen_root / "data" / "splits"
+            results_root = frozen_root / "results"
+            manifests_root.mkdir(parents=True, exist_ok=True)
+            splits_root.mkdir(parents=True, exist_ok=True)
+            results_root.mkdir(parents=True, exist_ok=True)
+
+            pool_manifest = manifests_root / "reasoning_all_valid_transforms.jsonl"
+            control_results = (
+                results_root / "reasoning_control_only_google-gemma-3-27b-it_off.jsonl"
+            )
+            robust_slice = (
+                splits_root / "reasoning_control_robust_slice_google-gemma-3-27b-it_off.jsonl"
+            )
+            paper_manifest = (
+                manifests_root / "reasoning_paper_slice_google-gemma-3-27b-it_off.jsonl"
+            )
+            paper_results = results_root / "reasoning_paper_slice_google-gemma-3-27b-it_off.jsonl"
+            probe_hidden_states = (
+                results_root / "reasoning_probe_hidden_states_google-gemma-3-27b-it_off.jsonl"
+            )
+            probe_dataset = (
+                results_root / "reasoning_probe_dataset_google-gemma-3-27b-it_off.jsonl"
+            )
+            probe_metrics = (
+                results_root / "reasoning_probe_metrics_google-gemma-3-27b-it_off.jsonl"
+            )
+            probe_metrics_csv = (
+                results_root / "reasoning_probe_metrics_google-gemma-3-27b-it_off.csv"
+            )
+            probe_summary = (
+                results_root / "reasoning_probe_summary_google-gemma-3-27b-it_off.txt"
+            )
+            patch_pairs = results_root / "reasoning_patch_pairs_google-gemma-3-27b-it_off.jsonl"
+            route_results = (
+                results_root / "reasoning_route_patching_google-gemma-3-27b-it_off.jsonl"
+            )
+            route_summary_txt = (
+                results_root / "reasoning_route_patching_summary_google-gemma-3-27b-it_off.txt"
+            )
+            route_summary_csv = (
+                results_root / "reasoning_route_patching_summary_google-gemma-3-27b-it_off.csv"
+            )
+            rescue_gold_plot = (
+                results_root
+                / "reasoning_route_patching_rescue_delta_gold_prob_google-gemma-3-27b-it_off.png"
+            )
+            rescue_margin_plot = (
+                results_root
+                / "reasoning_route_patching_rescue_delta_margin_google-gemma-3-27b-it_off.png"
+            )
+            induction_plot = (
+                results_root
+                / (
+                    "reasoning_route_patching_induction_delta_shortcut_prob_"
+                    "google-gemma-3-27b-it_off.png"
+                )
+            )
+
+            write_jsonl(pool_manifest, [{"task_id": "pool"}])
+            write_jsonl(control_results, [{"task_id": "control"}])
+            write_jsonl(robust_slice, [{"base_task_id": "base_1"}])
+            write_jsonl(paper_manifest, [{"task_id": "paper"}])
+            write_jsonl(paper_results, [{"task_id": "paper_result"}])
+            write_jsonl(probe_hidden_states, [{"task_id": "hidden"}])
+            write_jsonl(probe_dataset, [{"task_id": "dataset"}])
+            write_jsonl(probe_metrics, [{"kind": "hidden_state_probe"}])
+            probe_metrics_csv.write_text("kind\nhidden_state_probe\n", encoding="utf-8")
+            probe_summary.write_text("summary\n", encoding="utf-8")
+            write_jsonl(patch_pairs, [{"base_task_id": "base_1"}])
+            write_jsonl(route_results, [{"base_task_id": "base_1"}])
+            route_summary_txt.write_text("summary\n", encoding="utf-8")
+            route_summary_csv.write_text("metric\n1\n", encoding="utf-8")
+            rescue_gold_plot.write_bytes(b"plot")
+            rescue_margin_plot.write_bytes(b"plot")
+            induction_plot.write_bytes(b"plot")
+
+            config = ReasoningModelPipelineConfig(
+                model_name="google/gemma-3-27b-it",
+                frozen_root=frozen_root,
+                thinking_mode="off",
+                batch_size=4,
+                resume=True,
+                show_progress=False,
+            )
+
+            with patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline._resolve_pool_manifest",
+                return_value=pool_manifest,
+            ), patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.run_reasoning_control_only"
+            ) as mock_control, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.build_control_robust_slice"
+            ) as mock_slice, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.materialize_reasoning_slice"
+            ) as mock_materialize, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.run_reasoning_manifest_v2"
+            ) as mock_manifest, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.extract_reasoning_hidden_states"
+            ) as mock_extract, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.build_reasoning_probe_dataset"
+            ) as mock_dataset, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.train_reasoning_probes"
+            ) as mock_train, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline._write_probe_metrics_csv"
+            ) as mock_csv, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.build_reasoning_patch_pairs"
+            ) as mock_patch_pairs, patch(
+                "pressuretrace.behavior.run_reasoning_model_pipeline.run_reasoning_route_patching"
+            ) as mock_route_patching:
+                paths = run_reasoning_model_pipeline(config)
+
+                mock_control.assert_not_called()
+                mock_slice.assert_not_called()
+                mock_materialize.assert_not_called()
+                mock_manifest.assert_not_called()
+                mock_extract.assert_not_called()
+                mock_dataset.assert_not_called()
+                mock_train.assert_not_called()
+                mock_csv.assert_not_called()
+                mock_patch_pairs.assert_not_called()
+                mock_route_patching.assert_not_called()
+                self.assertTrue(paths.run_info_txt.exists())
+                run_info = paths.run_info_txt.read_text(encoding="utf-8")
+                self.assertIn("resume=True", run_info)
+                self.assertIn("batch_size=4", run_info)
+
 
 if __name__ == "__main__":
     unittest.main()

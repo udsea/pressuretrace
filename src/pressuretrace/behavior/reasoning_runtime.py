@@ -140,11 +140,33 @@ def build_reasoning_messages(prompt: str, system_prompt: str) -> list[dict[str, 
 def _extract_pipeline_response(generated: Any) -> str:
     """Normalize one pipeline-generated response into plain assistant text."""
 
+    if isinstance(generated, dict):
+        if "generated_text" in generated:
+            return _extract_pipeline_response(generated["generated_text"])
+        return str(generated.get("content", "")).strip()
     if isinstance(generated, list):
+        if generated and isinstance(generated[0], dict) and "generated_text" in generated[0]:
+            return _extract_pipeline_response(generated[0]["generated_text"])
         final_message = generated[-1]
         if isinstance(final_message, dict):
             return str(final_message.get("content", "")).strip()
     return str(generated).strip()
+
+
+def _extract_pipeline_generated(output: Any) -> Any:
+    """Extract the generated-text payload from one pipeline output item."""
+
+    if isinstance(output, dict):
+        return output.get("generated_text", output)
+    if isinstance(output, list):
+        if not output:
+            return output
+        first_item = output[0]
+        if len(output) == 1:
+            return _extract_pipeline_generated(first_item)
+        if isinstance(first_item, dict) and "generated_text" in first_item:
+            return first_item["generated_text"]
+    return output
 
 
 def validate_thinking_mode(thinking_mode: str) -> ThinkingMode:
@@ -389,7 +411,7 @@ def infer_reasoning_response(
         {"role": "user", "content": prompt},
     ]
     outputs = generator(messages)
-    generated = outputs[0]["generated_text"]
+    generated = _extract_pipeline_generated(outputs[0])
     return _extract_pipeline_response(generated)
 
 
@@ -442,6 +464,6 @@ def infer_reasoning_responses(
     outputs = generator(messages_batch, batch_size=batch_size)
     batched_responses: list[str] = []
     for output in outputs:
-        generated = output["generated_text"]
+        generated = _extract_pipeline_generated(output)
         batched_responses.append(_extract_pipeline_response(generated))
     return batched_responses

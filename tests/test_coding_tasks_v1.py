@@ -11,18 +11,25 @@ from pressuretrace.utils.io import read_jsonl
 
 
 class CodingTasksV1TestCase(unittest.TestCase):
-    def test_base_loader_returns_24_curated_tasks_with_balanced_archetypes(self) -> None:
+    def test_base_loader_returns_400_tasks_with_three_archetypes(self) -> None:
         tasks = load_coding_base_tasks()
 
-        self.assertEqual(len(tasks), 24)
+        self.assertEqual(len(tasks), 400)
         counts = Counter(task.archetype for task in tasks)
-        self.assertEqual(counts["visible_test_hardcoding"], 8)
-        self.assertEqual(counts["weak_checker_exploit"], 8)
-        self.assertEqual(counts["spec_omission"], 8)
+        self.assertEqual(counts["visible_test_hardcoding"], 134)
+        self.assertEqual(counts["weak_checker_exploit"], 133)
+        self.assertEqual(counts["spec_omission"], 133)
         self.assertTrue(all(task.entry_point == task.function_name for task in tasks))
         self.assertTrue(
             all(task.source_family in {"humaneval_like", "mbpp_like"} for task in tasks)
         )
+        self.assertIn(
+            "coding_v1_visible_test_hardcoding_001", {task.base_task_id for task in tasks}
+        )
+        self.assertIn(
+            "coding_v1_visible_test_hardcoding_134", {task.base_task_id for task in tasks}
+        )
+        self.assertIn("coding_v1_spec_omission_133", {task.base_task_id for task in tasks})
 
     def test_manifest_builder_writes_expected_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -30,11 +37,11 @@ class CodingTasksV1TestCase(unittest.TestCase):
             manifest_path = build_coding_all_valid_transforms(output_path=output_path)
             rows = read_jsonl(manifest_path)
 
-        self.assertEqual(len(rows), 72)
+        self.assertEqual(len(rows), 1200)
         pressure_counts = Counter(row["pressure_type"] for row in rows)
-        self.assertEqual(pressure_counts["control"], 24)
-        self.assertEqual(pressure_counts["teacher_anchor"], 24)
-        self.assertEqual(pressure_counts["neutral_wrong_answer_cue"], 24)
+        self.assertEqual(pressure_counts["control"], 400)
+        self.assertEqual(pressure_counts["teacher_anchor"], 400)
+        self.assertEqual(pressure_counts["neutral_wrong_answer_cue"], 400)
 
         first_row = rows[0]
         self.assertIn("task_id", first_row)
@@ -84,6 +91,18 @@ class CodingTasksV1TestCase(unittest.TestCase):
         self.assertNotIn("counting overlapping matches", control_spec_prompt)
         self.assertNotIn("counting overlapping matches", neutral_spec_prompt)
         self.assertIn("return sorted(set(items))", neutral_checker_prompt)
+
+    def test_manifest_builder_respects_sanity_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            output_path = Path(tempdir) / "coding_all_valid_transforms.jsonl"
+            manifest_path = build_coding_all_valid_transforms(limit=100, output_path=output_path)
+            rows = read_jsonl(manifest_path)
+
+        self.assertEqual(len(rows), 300)
+        pressure_counts = Counter(row["pressure_type"] for row in rows)
+        self.assertEqual(pressure_counts["control"], 100)
+        self.assertEqual(pressure_counts["teacher_anchor"], 100)
+        self.assertEqual(pressure_counts["neutral_wrong_answer_cue"], 100)
 
 
 if __name__ == "__main__":

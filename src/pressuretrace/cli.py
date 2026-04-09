@@ -12,6 +12,7 @@ from pressuretrace.behavior.build_coding_control_robust_slice import (
     build_coding_control_robust_slice,
 )
 from pressuretrace.behavior.build_control_robust_slice import build_control_robust_slice
+from pressuretrace.behavior.debug_coding_tasks import run_coding_debug_tasks
 from pressuretrace.behavior.materialize_coding_paper_slice import (
     materialize_coding_paper_slice,
 )
@@ -35,6 +36,7 @@ from pressuretrace.behavior.summarize_coding_behavior import (
     render_coding_behavior_summary_text,
 )
 from pressuretrace.config import DEFAULT_MODELS, PRESSURE_PROFILES
+from pressuretrace.evaluation.coding_eval_debug import run_coding_eval_debug
 from pressuretrace.generation.coding.make_coding_tasks import build_coding_all_valid_transforms
 from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
     build_reasoning_all_valid_transforms_v2,
@@ -453,6 +455,80 @@ def coding_build_pool_v1_command(
 
     manifest_path = build_coding_all_valid_transforms(limit=limit, output_path=output_path)
     console.print(f"Transform pool: [bold]{manifest_path}[/bold]")
+
+
+@app.command("coding-eval-debug-v1")
+def coding_eval_debug_v1_command(
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit JSONL path for the evaluator fixture report.",
+    ),
+    require_pass: bool = typer.Option(
+        True,
+        "--require-pass/--allow-failures",
+        help="Fail the command if any evaluator gold fixture is mislabeled.",
+    ),
+) -> None:
+    """Run mandatory evaluator self-tests on representative coding fixtures."""
+
+    artifacts = run_coding_eval_debug(
+        output_path=output_path,
+        console=console,
+        require_pass=require_pass,
+    )
+    console.print(f"Evaluator debug report: [bold]{artifacts.output_path}[/bold]")
+    console.print(
+        f"Matched expected labels: [bold]{artifacts.passing_cases}/{artifacts.total_cases}[/bold]"
+    )
+
+
+@app.command("coding-debug-run-v1")
+def coding_debug_run_v1_command(
+    model_name: str = typer.Option(
+        "Qwen/Qwen3-14B",
+        help="Model identifier recorded in debug rows.",
+    ),
+    thinking_mode: str = typer.Option(
+        "off",
+        "--thinking-mode",
+        help="Thinking mode for supported models: default, on, or off.",
+    ),
+    source: str = typer.Option(
+        "fixtures",
+        "--source",
+        help="Debug source: fixtures or model.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit debug JSONL output path.",
+    ),
+    batch_size: int = typer.Option(1, min=1, help="Batch size for model-backed debug runs."),
+    require_shortcut_signal: bool = typer.Option(
+        True,
+        "--require-shortcut-signal/--allow-no-shortcut-signal",
+        help="Fail the command if no visible-pass / hidden-fail shortcut signal appears.",
+    ),
+) -> None:
+    """Run a small coding-family debug pass on representative tasks."""
+
+    if source not in {"fixtures", "model"}:
+        raise typer.BadParameter("source must be one of: fixtures, model")
+    artifacts = run_coding_debug_tasks(
+        model_name=model_name,
+        thinking_mode=thinking_mode,
+        source=source,
+        batch_size=batch_size,
+        output_path=output_path,
+        console=console,
+        require_shortcut_signal=require_shortcut_signal,
+    )
+    console.print(f"Debug run: [bold]{artifacts.output_path}[/bold]")
+    console.print(
+        "Shortcut-signal rows: "
+        f"[bold]{artifacts.shortcut_signal_count}/{artifacts.row_count}[/bold]"
+    )
 
 
 @app.command("coding-control-only-v1")

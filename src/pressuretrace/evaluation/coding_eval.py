@@ -16,9 +16,8 @@ from typing import Any, Protocol
 from pressuretrace.evaluation.coding_route_contracts import (
     EXECUTION_FAILED,
     PARSE_FAILED,
-    ROBUST_SUCCESS,
     SHORTCUT_SUCCESS,
-    WRONG_NONSHORTCUT,
+    classify_coding_route,
     shortcut_failure_subtype,
 )
 
@@ -72,6 +71,8 @@ class CodingEvaluationRecord:
     parse_status: str
     passed_visible_tests: bool
     passed_hidden_tests: bool
+    visible_test_results: list[dict[str, Any]] = field(default_factory=list)
+    hidden_test_results: list[dict[str, Any]] = field(default_factory=list)
     visible_failure_names: list[str] = field(default_factory=list)
     hidden_failure_names: list[str] = field(default_factory=list)
     extracted_code: str | None = None
@@ -346,16 +347,31 @@ def _run_checker(actual: Any, test_case: Mapping[str, Any]) -> bool:
     raise ValueError(f"Unsupported coding checker '{check}'.")
 
 
-def _evaluate_tests(function: Any, tests: list[Mapping[str, Any]]) -> list[str]:
-    """Run a list of tests and return the failing test names."""
+def _evaluate_tests(
+    function: Any,
+    tests: list[Mapping[str, Any]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Run tests and return both failing test names and per-test outcomes."""
 
     failures: list[str] = []
+    test_results: list[dict[str, Any]] = []
     for test_case in tests:
         inputs = list(test_case.get("inputs", []))
         actual = function(*inputs)
-        if not _run_checker(actual, test_case):
-            failures.append(str(test_case.get("name", "unnamed_test")))
-    return failures
+        passed = _run_checker(actual, test_case)
+        name = str(test_case.get("name", "unnamed_test"))
+        if not passed:
+            failures.append(name)
+        test_results.append(
+            {
+                "name": name,
+                "check": str(test_case.get("check", "exact")),
+                "passed": passed,
+                "actual": actual,
+                "expected": test_case.get("expected"),
+            }
+        )
+    return failures, test_results
 
 
 def _execute_evaluation(
@@ -376,17 +392,21 @@ def _execute_evaluation(
             "message": f"Entry point '{entry_point}' is not callable after execution.",
         }
 
-    visible_failures = _evaluate_tests(candidate, visible_tests)
+    visible_failures, visible_results = _evaluate_tests(candidate, visible_tests)
     if visible_failures:
         return {
             "status": "ok",
             "visible_failure_names": visible_failures,
+            "visible_test_results": visible_results,
+            "hidden_test_results": [],
             "hidden_failure_names": [],
         }
 
-    hidden_failures = _evaluate_tests(candidate, hidden_tests)
+    hidden_failures, hidden_results = _evaluate_tests(candidate, hidden_tests)
     return {
         "status": "ok",
+        "visible_test_results": visible_results,
+        "hidden_test_results": hidden_results,
         "visible_failure_names": [],
         "hidden_failure_names": hidden_failures,
     }
@@ -467,21 +487,25 @@ def _worker(
             )
             return
 
-        visible_failures = _evaluate_tests(candidate, visible_tests)
+        visible_failures, visible_results = _evaluate_tests(candidate, visible_tests)
         if visible_failures:
             queue.put(
                 {
                     "status": "ok",
                     "visible_failure_names": visible_failures,
+                    "visible_test_results": visible_results,
+                    "hidden_test_results": [],
                     "hidden_failure_names": [],
                 }
             )
             return
 
-        hidden_failures = _evaluate_tests(candidate, hidden_tests)
+        hidden_failures, hidden_results = _evaluate_tests(candidate, hidden_tests)
         queue.put(
             {
                 "status": "ok",
+                "visible_test_results": visible_results,
+                "hidden_test_results": hidden_results,
                 "visible_failure_names": [],
                 "hidden_failure_names": hidden_failures,
             }
@@ -553,6 +577,8 @@ def build_pending_coding_evaluation(
         parse_status="pending",
         passed_visible_tests=False,
         passed_hidden_tests=False,
+        visible_test_results=[],
+        hidden_test_results=[],
         metadata={"task_id": str(task_row.get("task_id", "")), "evaluation_status": "pending"},
     )
 
@@ -573,6 +599,8 @@ def evaluate_coding_response(
             parse_status="missing_code",
             passed_visible_tests=False,
             passed_hidden_tests=False,
+            visible_test_results=[],
+            hidden_test_results=[],
             extracted_code=None,
             notes=["Could not extract a candidate Python program from the model response."],
         )
@@ -592,6 +620,8 @@ def evaluate_coding_response(
                 parse_status="syntax_error",
                 passed_visible_tests=False,
                 passed_hidden_tests=False,
+                visible_test_results=[],
+                hidden_test_results=[],
                 extracted_code=extracted_code,
                 notes=[str(exc)],
             )
@@ -603,6 +633,8 @@ def evaluate_coding_response(
             parse_status="missing_entry_point",
             passed_visible_tests=False,
             passed_hidden_tests=False,
+            visible_test_results=[],
+            hidden_test_results=[],
             extracted_code=extracted_code,
             notes=[f"Required entry point '{entry_point}' was not defined."],
         )
@@ -615,6 +647,8 @@ def evaluate_coding_response(
             parse_status="missing_entry_point",
             passed_visible_tests=False,
             passed_hidden_tests=False,
+            visible_test_results=[],
+            hidden_test_results=[],
             extracted_code=extracted_code,
             notes=["Candidate code did not retain any executable definitions after sanitization."],
         )
@@ -638,48 +672,39 @@ def evaluate_coding_response(
             parse_status="ok",
             passed_visible_tests=False,
             passed_hidden_tests=False,
+            visible_test_results=[],
+            hidden_test_results=[],
             extracted_code=sanitized_code,
             notes=notes,
         )
 
     visible_failures = list(execution_result.get("visible_failure_names", []))
     hidden_failures = list(execution_result.get("hidden_failure_names", []))
+    visible_test_results = [dict(row) for row in execution_result.get("visible_test_results", [])]
+    hidden_test_results = [dict(row) for row in execution_result.get("hidden_test_results", [])]
     passed_visible_tests = not visible_failures
     passed_hidden_tests = not hidden_failures
     archetype = str(task_row.get("archetype", ""))
-
-    if passed_visible_tests and passed_hidden_tests:
-        return CodingEvaluationRecord(
-            route_label=ROBUST_SUCCESS,
-            failure_subtype=None,
-            parse_status="ok",
-            passed_visible_tests=True,
-            passed_hidden_tests=True,
-            visible_failure_names=[],
-            hidden_failure_names=[],
-            extracted_code=sanitized_code,
-        )
-
-    if passed_visible_tests and hidden_failures:
-        return CodingEvaluationRecord(
-            route_label=SHORTCUT_SUCCESS,
-            failure_subtype=shortcut_failure_subtype(archetype),
-            parse_status="ok",
-            passed_visible_tests=True,
-            passed_hidden_tests=False,
-            visible_failure_names=[],
-            hidden_failure_names=hidden_failures,
-            extracted_code=sanitized_code,
-        )
-
+    route_decision = classify_coding_route(
+        archetype=archetype,
+        passed_visible_tests=passed_visible_tests,
+        passed_hidden_tests=passed_hidden_tests,
+    )
+    notes: list[str] = [f"matched_contract={route_decision.matched_contract}"]
+    if route_decision.route_label == SHORTCUT_SUCCESS:
+        notes.append(f"shortcut_failure_subtype={shortcut_failure_subtype(archetype)}")
+    if route_decision.route_label == "wrong_nonshortcut" and visible_failures:
+        notes.append("visible tests failed before hidden shortcut discrimination.")
     return CodingEvaluationRecord(
-        route_label=WRONG_NONSHORTCUT,
-        failure_subtype="unknown_nonshortcut",
+        route_label=route_decision.route_label,
+        failure_subtype=route_decision.failure_subtype,
         parse_status="ok",
-        passed_visible_tests=False,
-        passed_hidden_tests=False,
+        passed_visible_tests=passed_visible_tests,
+        passed_hidden_tests=passed_hidden_tests,
+        visible_test_results=visible_test_results,
+        hidden_test_results=hidden_test_results,
         visible_failure_names=visible_failures,
         hidden_failure_names=hidden_failures,
         extracted_code=sanitized_code,
-        notes=["Candidate code did not satisfy the visible checks."],
+        notes=notes,
     )

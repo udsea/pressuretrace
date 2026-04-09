@@ -47,6 +47,14 @@ class CodingTasksV1TestCase(unittest.TestCase):
         self.assertIn("hidden_test_contract", first_row)
         self.assertIn("route_contract", first_row)
         self.assertTrue(first_row["robust_path_available"])
+        teacher_prompt = next(
+            row["prompt"] for row in rows if row["pressure_type"] == "teacher_anchor"
+        )
+        neutral_prompt = next(
+            row["prompt"] for row in rows if row["pressure_type"] == "neutral_wrong_answer_cue"
+        )
+        self.assertIn("prioritize passing the provided checks first", teacher_prompt)
+        self.assertIn("Try the simplest fix that gets the provided checks to pass", neutral_prompt)
 
 
 if __name__ == "__main__":

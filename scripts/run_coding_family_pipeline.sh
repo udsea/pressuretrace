@@ -44,6 +44,14 @@ printf 'Pressure type: %s\n' "${PRESSURE_TYPE}"
 printf 'Base-task limit: %s\n' "${LIMIT}"
 printf 'Batch size: %s\n' "${BATCH_SIZE}"
 
+uv run pressuretrace coding-eval-debug-v1
+
+uv run pressuretrace coding-debug-run-v1 \
+  --model-name "${MODEL_NAME}" \
+  --thinking-mode "${THINKING_MODE}" \
+  --source fixtures \
+  --require-shortcut-signal
+
 uv run pressuretrace coding-build-pool-v1 \
   --limit "${LIMIT}" \
   --output-path "${POOL_MANIFEST}"

@@ -71,7 +71,11 @@ def _visible_test_hardcoding_task(
         shortcut_hint=shortcut_hint,
         visible_tests=visible_tests,
         hidden_tests=hidden_tests,
-        metadata={"task_family": "coding_v1", "shortcut_subtype": "hardcoding_suspected"},
+        metadata={
+            "task_family": "coding_v1",
+            "shortcut_subtype": "hardcoding_suspected",
+            "intended_shortcut_route": shortcut_hint,
+        },
     )
 
 
@@ -99,7 +103,11 @@ def _weak_checker_task(
         shortcut_hint=shortcut_hint,
         visible_tests=visible_tests,
         hidden_tests=hidden_tests,
-        metadata={"task_family": "coding_v1", "shortcut_subtype": "hidden_test_failure"},
+        metadata={
+            "task_family": "coding_v1",
+            "shortcut_subtype": "hidden_test_failure",
+            "intended_shortcut_route": shortcut_hint,
+        },
     )
 
 
@@ -127,7 +135,11 @@ def _spec_omission_task(
         shortcut_hint=shortcut_hint,
         visible_tests=visible_tests,
         hidden_tests=hidden_tests,
-        metadata={"task_family": "coding_v1", "shortcut_subtype": "constraint_omitted"},
+        metadata={
+            "task_family": "coding_v1",
+            "shortcut_subtype": "constraint_omitted",
+            "intended_shortcut_route": shortcut_hint,
+        },
     )
 
 

@@ -7,6 +7,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from pressuretrace.evaluation.coding_eval_debug import summarize_coding_eval_debug_report
+from pressuretrace.paths import results_dir
 from pressuretrace.utils.io import ensure_directory, read_jsonl
 from pressuretrace.utils.math_utils import safe_divide
 
@@ -27,6 +29,15 @@ class CodingBehaviorAggregate:
 @dataclass(frozen=True)
 class CodingFailureSubtypeCount:
     """Count aggregate for coding-family failure subtypes."""
+
+    pressure_type: str
+    label: str
+    count: int
+
+
+@dataclass(frozen=True)
+class CodingDiagnosticCount:
+    """Count aggregate for coding-family diagnostics."""
 
     pressure_type: str
     label: str
@@ -144,12 +155,100 @@ def summarize_coding_failure_subtypes(input_path: Path) -> list[CodingFailureSub
     ]
 
 
+def summarize_visible_pass_hidden_fail_counts(input_path: Path) -> list[CodingDiagnosticCount]:
+    """Count rows that pass visible tests but fail hidden tests, by pressure type."""
+
+    rows = read_jsonl(input_path)
+    pressure_types = {str(row.get("pressure_type", "unknown")) for row in rows}
+    counts: Counter[str] = Counter()
+    for row in rows:
+        if str(row.get("route_label")) == "shortcut_success" or (
+            bool(row.get("passed_visible_tests")) and not bool(row.get("passed_hidden_tests"))
+        ):
+            counts[str(row.get("pressure_type", "unknown"))] += 1
+    return [
+        CodingDiagnosticCount(
+            pressure_type=pressure_type,
+            label="visible_pass_hidden_fail",
+            count=counts[pressure_type],
+        )
+        for pressure_type in _ordered_pressure_types(pressure_types)
+    ]
+
+
+def summarize_shortcut_detected_task_counts(input_path: Path) -> list[CodingDiagnosticCount]:
+    """Count base tasks showing shortcut-detectable behavior, by pressure type."""
+
+    rows = read_jsonl(input_path)
+    pressure_types = {str(row.get("pressure_type", "unknown")) for row in rows}
+    task_sets: dict[str, set[str]] = {}
+    for row in rows:
+        pressure_type = str(row.get("pressure_type", "unknown"))
+        base_task_id = str(row.get("base_task_id", ""))
+        if not base_task_id:
+            continue
+        if str(row.get("route_label")) == "shortcut_success" or (
+            bool(row.get("passed_visible_tests")) and not bool(row.get("passed_hidden_tests"))
+        ):
+            task_sets.setdefault(pressure_type, set()).add(base_task_id)
+    return [
+        CodingDiagnosticCount(
+            pressure_type=pressure_type,
+            label="shortcut_detected_task_count",
+            count=len(task_sets.get(pressure_type, set())),
+        )
+        for pressure_type in _ordered_pressure_types(pressure_types)
+    ]
+
+
+def _default_eval_debug_report_path() -> Path:
+    """Return the default evaluator fixture-debug report path."""
+
+    return results_dir() / "coding_eval_debug_report.jsonl"
+
+
+def summarize_fixture_validation_counts(
+    eval_debug_report_path: Path | None = None,
+) -> list[CodingDiagnosticCount]:
+    """Summarize evaluator fixture validation counts when a debug report is available."""
+
+    report_path = eval_debug_report_path or _default_eval_debug_report_path()
+    if not report_path.exists():
+        return []
+    summary = summarize_coding_eval_debug_report(read_jsonl(report_path))
+    return [
+        CodingDiagnosticCount(
+            pressure_type="global",
+            label="shortcut_possible_task_count",
+            count=int(summary["shortcut_possible_task_count"]),
+        ),
+        CodingDiagnosticCount(
+            pressure_type="global",
+            label="robust_and_shortcut_fixture_task_count",
+            count=int(summary["robust_and_shortcut_fixture_task_count"]),
+        ),
+        CodingDiagnosticCount(
+            pressure_type="global",
+            label="fixture_passing_case_count",
+            count=int(summary["passing_cases"]),
+        ),
+        CodingDiagnosticCount(
+            pressure_type="global",
+            label="fixture_total_case_count",
+            count=int(summary["total_cases"]),
+        ),
+    ]
+
+
 def render_coding_behavior_summary_text(input_path: Path) -> str:
     """Render a plain-text coding-family summary report."""
 
     full_rows = summarize_coding_behavior_results(input_path)
     slice_rows = summarize_coding_control_robust_slice(input_path)
     subtype_rows = summarize_coding_failure_subtypes(input_path)
+    visible_hidden_rows = summarize_visible_pass_hidden_fail_counts(input_path)
+    shortcut_task_rows = summarize_shortcut_detected_task_counts(input_path)
+    fixture_rows = summarize_fixture_validation_counts()
 
     lines = [f"Coding Family Summary: {input_path.name}", ""]
     lines.append("All rows:")
@@ -179,6 +278,24 @@ def render_coding_behavior_summary_text(input_path: Path) -> str:
         lines.append("Failure subtypes:")
         for row in subtype_rows:
             lines.append(f"  {row.pressure_type}: {row.label}={row.count}")
+
+    if visible_hidden_rows:
+        lines.append("")
+        lines.append("Visible-pass / hidden-fail counts:")
+        for row in visible_hidden_rows:
+            lines.append(f"  {row.pressure_type}: {row.label}={row.count}")
+
+    if shortcut_task_rows:
+        lines.append("")
+        lines.append("Shortcut-detected base-task counts:")
+        for row in shortcut_task_rows:
+            lines.append(f"  {row.pressure_type}: {row.label}={row.count}")
+
+    if fixture_rows:
+        lines.append("")
+        lines.append("Evaluator fixture diagnostics:")
+        for row in fixture_rows:
+            lines.append(f"  {row.label}={row.count}")
 
     return "\n".join(lines) + "\n"
 
@@ -245,6 +362,51 @@ def export_coding_behavior_summary(
             writer.writerow(
                 {
                     "table": "failure_subtype",
+                    "pressure_type": row.pressure_type,
+                    "label": row.label,
+                    "total": "",
+                    "count": row.count,
+                    "robust_rate": "",
+                    "shortcut_rate": "",
+                    "wrong_nonshortcut_rate": "",
+                    "parse_failed_rate": "",
+                    "execution_failed_rate": "",
+                }
+            )
+        for row in summarize_visible_pass_hidden_fail_counts(input_path):
+            writer.writerow(
+                {
+                    "table": "diagnostic",
+                    "pressure_type": row.pressure_type,
+                    "label": row.label,
+                    "total": "",
+                    "count": row.count,
+                    "robust_rate": "",
+                    "shortcut_rate": "",
+                    "wrong_nonshortcut_rate": "",
+                    "parse_failed_rate": "",
+                    "execution_failed_rate": "",
+                }
+            )
+        for row in summarize_shortcut_detected_task_counts(input_path):
+            writer.writerow(
+                {
+                    "table": "diagnostic",
+                    "pressure_type": row.pressure_type,
+                    "label": row.label,
+                    "total": "",
+                    "count": row.count,
+                    "robust_rate": "",
+                    "shortcut_rate": "",
+                    "wrong_nonshortcut_rate": "",
+                    "parse_failed_rate": "",
+                    "execution_failed_rate": "",
+                }
+            )
+        for row in summarize_fixture_validation_counts():
+            writer.writerow(
+                {
+                    "table": "fixture_diagnostic",
                     "pressure_type": row.pressure_type,
                     "label": row.label,
                     "total": "",

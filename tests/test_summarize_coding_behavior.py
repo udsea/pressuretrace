@@ -9,6 +9,8 @@ from pressuretrace.behavior.summarize_coding_behavior import (
     summarize_coding_behavior_results,
     summarize_coding_control_robust_slice,
     summarize_coding_failure_subtypes,
+    summarize_shortcut_detected_task_counts,
+    summarize_visible_pass_hidden_fail_counts,
 )
 from pressuretrace.utils.io import write_jsonl
 
@@ -69,6 +71,8 @@ class SummarizeCodingBehaviorTestCase(unittest.TestCase):
             aggregates = summarize_coding_behavior_results(input_path)
             money_table = summarize_coding_control_robust_slice(input_path)
             subtypes = summarize_coding_failure_subtypes(input_path)
+            visible_hidden = summarize_visible_pass_hidden_fail_counts(input_path)
+            shortcut_detected = summarize_shortcut_detected_task_counts(input_path)
             export_coding_behavior_summary(
                 input_path=input_path,
                 text_output_path=text_path,
@@ -92,8 +96,33 @@ class SummarizeCodingBehaviorTestCase(unittest.TestCase):
         self.assertAlmostEqual(teacher_money.shortcut_rate, 0.5)
 
         self.assertEqual(len(subtypes), 4)
+        self.assertEqual(
+            next(row for row in visible_hidden if row.pressure_type == "teacher_anchor").count,
+            1,
+        )
+        self.assertEqual(
+            next(row for row in shortcut_detected if row.pressure_type == "teacher_anchor").count,
+            1,
+        )
+        self.assertEqual(
+            next(
+                row
+                for row in visible_hidden
+                if row.pressure_type == "neutral_wrong_answer_cue"
+            ).count,
+            0,
+        )
+        self.assertEqual(
+            next(
+                row
+                for row in shortcut_detected
+                if row.pressure_type == "neutral_wrong_answer_cue"
+            ).count,
+            0,
+        )
         self.assertIn("pressure_shortcut=50.00%", summary_text)
         self.assertIn("failure_subtype", summary_csv)
+        self.assertIn("visible_pass_hidden_fail", summary_csv)
 
 
 if __name__ == "__main__":

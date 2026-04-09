@@ -21,8 +21,10 @@ from rich.progress import (
 )
 
 from pressuretrace.behavior.reasoning_runtime import (
+    ReasoningGenerationProfile,
     generation_profile_for_reasoning_v2,
     infer_reasoning_responses,
+    is_qwen3_model,
     validate_thinking_mode,
 )
 from pressuretrace.evaluation.coding_eval import evaluate_coding_response
@@ -35,6 +37,7 @@ CODING_SYSTEM_PROMPT = (
     "You write concise, correct Python functions. "
     "Return only Python code and no markdown or explanation."
 )
+CODING_MAX_NEW_TOKENS = 160
 
 
 @dataclass(frozen=True)
@@ -123,11 +126,28 @@ def infer_coding_model_batch(
     return infer_reasoning_responses(
         prompts=prompts,
         model_name=model_name,
-        profile=generation_profile_for_reasoning_v2(model_name, thinking_mode),
+        profile=_generation_profile_for_coding_v1(model_name, thinking_mode),
         strip_qwen3_thinking=True,
         system_prompt=CODING_SYSTEM_PROMPT,
         batch_size=batch_size,
     )
+
+
+def _generation_profile_for_coding_v1(
+    model_name: str,
+    thinking_mode: str,
+) -> ReasoningGenerationProfile:
+    """Choose a coding-specific decoding profile without inheriting reasoning sampling."""
+
+    validated_thinking_mode = validate_thinking_mode(thinking_mode)
+    if is_qwen3_model(model_name):
+        return ReasoningGenerationProfile(
+            backend="manual_qwen3",
+            do_sample=False,
+            max_new_tokens=CODING_MAX_NEW_TOKENS,
+            enable_thinking=validated_thinking_mode in {"default", "on"},
+        )
+    return generation_profile_for_reasoning_v2(model_name, validated_thinking_mode)
 
 
 def _run_coding_manifest_rows(

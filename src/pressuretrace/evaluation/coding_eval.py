@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 import multiprocessing
+import os
 import re
+import signal
+import threading
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -54,6 +57,10 @@ SAFE_BUILTINS: dict[str, Any] = {
     "zip": zip,
 }
 CODE_BLOCK_RE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+class EvaluationTimeoutError(RuntimeError):
+    """Raised when coding evaluation exceeds the configured timeout."""
 
 
 @dataclass(frozen=True)
@@ -351,6 +358,93 @@ def _evaluate_tests(function: Any, tests: list[Mapping[str, Any]]) -> list[str]:
     return failures
 
 
+def _execute_evaluation(
+    *,
+    code: str,
+    entry_point: str,
+    visible_tests: list[Mapping[str, Any]],
+    hidden_tests: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Execute coding evaluation directly in-process."""
+
+    namespace: dict[str, Any] = {"__builtins__": SAFE_BUILTINS.copy()}
+    exec(compile(code, "<coding-eval>", "exec"), namespace, namespace)
+    candidate = namespace.get(entry_point)
+    if not callable(candidate):
+        return {
+            "status": "runtime_error",
+            "message": f"Entry point '{entry_point}' is not callable after execution.",
+        }
+
+    visible_failures = _evaluate_tests(candidate, visible_tests)
+    if visible_failures:
+        return {
+            "status": "ok",
+            "visible_failure_names": visible_failures,
+            "hidden_failure_names": [],
+        }
+
+    hidden_failures = _evaluate_tests(candidate, hidden_tests)
+    return {
+        "status": "ok",
+        "visible_failure_names": [],
+        "hidden_failure_names": hidden_failures,
+    }
+
+
+def _timeout_handler(_signum: int, _frame: Any) -> None:
+    """Raise a deterministic timeout error from a Unix alarm signal."""
+
+    raise EvaluationTimeoutError("Coding evaluation timed out.")
+
+
+def _can_use_signal_timeout() -> bool:
+    """Return whether the current process can use in-process Unix alarm timeouts."""
+
+    return (
+        os.name == "posix"
+        and threading.current_thread() is threading.main_thread()
+        and hasattr(signal, "setitimer")
+    )
+
+
+def _run_with_signal_timeout(
+    *,
+    code: str,
+    entry_point: str,
+    visible_tests: list[Mapping[str, Any]],
+    hidden_tests: list[Mapping[str, Any]],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Execute coding evaluation with a low-overhead Unix alarm timeout."""
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        return _execute_evaluation(
+            code=code,
+            entry_point=entry_point,
+            visible_tests=visible_tests,
+            hidden_tests=hidden_tests,
+        )
+    except EvaluationTimeoutError:
+        return {
+            "status": "runtime_error",
+            "message": f"Evaluation timed out after {timeout_seconds:.1f}s.",
+            "exception_type": "TimeoutError",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "runtime_error",
+            "message": str(exc),
+            "exception_type": type(exc).__name__,
+        }
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
 def _worker(
     code: str,
     entry_point: str,
@@ -410,7 +504,16 @@ def _run_in_subprocess(
     hidden_tests: list[Mapping[str, Any]],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """Execute one coding evaluation in a subprocess and enforce a timeout."""
+    """Execute one coding evaluation with timeout protection."""
+
+    if _can_use_signal_timeout():
+        return _run_with_signal_timeout(
+            code=code,
+            entry_point=entry_point,
+            visible_tests=visible_tests,
+            hidden_tests=hidden_tests,
+            timeout_seconds=timeout_seconds,
+        )
 
     ctx = multiprocessing.get_context("spawn")
     queue: multiprocessing.Queue[dict[str, Any]] = ctx.Queue()

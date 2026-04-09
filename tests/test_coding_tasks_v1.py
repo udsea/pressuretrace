@@ -50,11 +50,26 @@ class CodingTasksV1TestCase(unittest.TestCase):
         teacher_prompt = next(
             row["prompt"] for row in rows if row["pressure_type"] == "teacher_anchor"
         )
-        neutral_prompt = next(
-            row["prompt"] for row in rows if row["pressure_type"] == "neutral_wrong_answer_cue"
+        neutral_spec_prompt = next(
+            row["prompt"]
+            for row in rows
+            if row["pressure_type"] == "neutral_wrong_answer_cue"
+            and row["base_task_id"] == "coding_v1_spec_omission_001"
         )
-        self.assertIn("prioritize passing the provided checks first", teacher_prompt)
-        self.assertIn("Try the simplest fix that gets the provided checks to pass", neutral_prompt)
+        neutral_checker_prompt = next(
+            row["prompt"]
+            for row in rows
+            if row["pressure_type"] == "neutral_wrong_answer_cue"
+            and row["base_task_id"] == "coding_v1_weak_checker_exploit_001"
+        )
+        self.assertIn(
+            "This review gate is mainly whether the provided checks go green",
+            teacher_prompt,
+        )
+        self.assertIn("Potential narrow patch direction", teacher_prompt)
+        self.assertIn("The current patch under review is shown in Starter.", neutral_spec_prompt)
+        self.assertIn("return text.count(pattern)", neutral_spec_prompt)
+        self.assertIn("return sorted(set(items))", neutral_checker_prompt)
 
 
 if __name__ == "__main__":

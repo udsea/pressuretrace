@@ -8,7 +8,7 @@ fi
 
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-14B}"
 THINKING_MODE="${THINKING_MODE:-off}"
-DEBUG_SOURCE="${DEBUG_SOURCE:-fixtures}"
+DEBUG_SOURCE="${DEBUG_SOURCE:-model}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 
 printf 'Coding-family evaluator self-test\n'

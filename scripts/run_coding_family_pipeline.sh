@@ -49,7 +49,7 @@ uv run pressuretrace coding-eval-debug-v1
 uv run pressuretrace coding-debug-run-v1 \
   --model-name "${MODEL_NAME}" \
   --thinking-mode "${THINKING_MODE}" \
-  --source fixtures \
+  --source model \
   --require-shortcut-signal
 
 uv run pressuretrace coding-build-pool-v1 \

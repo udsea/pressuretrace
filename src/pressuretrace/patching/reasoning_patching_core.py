@@ -209,6 +209,9 @@ def _decoder_layers(model: Any) -> Any:
     """Return the decoder-layer sequence for a causal LM."""
 
     candidate_paths = (
+        ("model", "language_model", "layers"),
+        ("language_model", "model", "layers"),
+        ("language_model", "layers"),
         ("model", "layers"),
         ("model", "decoder", "layers"),
         ("decoder", "layers"),

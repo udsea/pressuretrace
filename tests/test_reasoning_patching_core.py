@@ -130,6 +130,16 @@ class _DummyModel(nn.Module):
         )
 
 
+class _GemmaStyleWrapper(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.model = nn.Module()
+        self.model.language_model = nn.Module()
+        self.model.language_model.layers = nn.ModuleList(
+            [_DummyBlock(1.0), _DummyBlock(10.0), _DummyBlock(100.0)]
+        )
+
+
 def _bundle() -> ReasoningPatchingBundle:
     tokenizer = _FakeTokenizer()
     model = _DummyModel()
@@ -232,6 +242,13 @@ class ReasoningPatchingCoreTestCase(unittest.TestCase):
 
     def test_resolve_decoder_layer_module_supports_negative_indexing(self) -> None:
         model = _DummyModel()
+
+        resolved = resolve_decoder_layer_module(model, -1)
+
+        self.assertIsInstance(resolved, _DummyBlock)
+
+    def test_resolve_decoder_layer_module_supports_gemma_multimodal_wrapper(self) -> None:
+        model = _GemmaStyleWrapper()
 
         resolved = resolve_decoder_layer_module(model, -1)
 

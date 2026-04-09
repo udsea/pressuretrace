@@ -960,6 +960,151 @@ def coding_probe_summary_export_v1_command(
         console.print(f"{name}: [bold]{path}[/bold]")
 
 
+@app.command("coding-patch-pairs-v1")
+def coding_patch_pairs_v1_command(
+    results_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--results-path",
+        help="Optional explicit frozen coding results path.",
+    ),
+    control_slice_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--control-slice-path",
+        help="Optional explicit frozen coding control-robust slice path.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit coding patch-pairs JSONL path.",
+    ),
+    pressure_types: str = typer.Option(
+        "neutral_wrong_answer_cue,teacher_anchor",
+        "--pressure-types",
+        help="Comma-separated pressure types to retain while building pairs.",
+    ),
+) -> None:
+    """Build matched control/pressure patch pairs for coding route patching."""
+
+    from pressuretrace.config import resolve_coding_frozen_root
+    from pressuretrace.patching.build_coding_patch_pairs import build_coding_patch_pairs
+
+    frozen_root = resolve_coding_frozen_root()
+    patch_pairs_path = build_coding_patch_pairs(
+        results_path=(
+            results_path
+            or frozen_root / "results" / "coding_paper_slice_qwen-qwen3-14b_off.jsonl"
+        ),
+        control_slice_path=(
+            control_slice_path
+            or frozen_root
+            / "data"
+            / "splits"
+            / "coding_control_robust_slice_qwen-qwen3-14b_off.jsonl"
+        ),
+        output_path=(
+            output_path
+            or frozen_root / "results" / "coding_patch_pairs_qwen-qwen3-14b_off.jsonl"
+        ),
+        pressure_types=tuple(part.strip() for part in pressure_types.split(",") if part.strip()),
+    )
+    console.print(f"patch_pairs: [bold]{patch_pairs_path}[/bold]")
+
+
+@app.command("coding-route-patching-v1")
+def coding_route_patching_v1_command(
+    frozen_root: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--frozen-root",
+        help="Optional explicit frozen coding root.",
+    ),
+    patch_pairs_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--patch-pairs-path",
+        help="Optional explicit coding patch-pairs JSONL path.",
+    ),
+    manifest_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--manifest-path",
+        help="Optional explicit frozen coding manifest path.",
+    ),
+    results_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--results-path",
+        help="Optional explicit frozen coding paper-slice results path.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit coding patching-output JSONL path.",
+    ),
+    summary_txt_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-txt-path",
+        help="Optional explicit coding patching summary TXT path.",
+    ),
+    summary_csv_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-csv-path",
+        help="Optional explicit coding patching summary CSV path.",
+    ),
+    model_name: str = typer.Option(
+        CODING_V1_MODEL_NAME,
+        help="Model used for coding route patching.",
+    ),
+    thinking_mode: str = typer.Option(
+        CODING_V1_THINKING_MODE,
+        "--thinking-mode",
+        help="Thinking mode for coding route patching.",
+    ),
+    layers: str = typer.Option(
+        "-8,-10,-6",
+        "--layers",
+        help="Comma-separated patch layers.",
+    ),
+    pressure_types: str = typer.Option(
+        "neutral_wrong_answer_cue",
+        "--pressure-types",
+        help="Comma-separated pressure types to retain.",
+    ),
+    max_pairs: int | None = typer.Option(
+        None,
+        "--max-pairs",
+        help="Optional cap on retained coding patch pairs for debugging.",
+    ),
+) -> None:
+    """Run first-pass continuation-level coding route patching on frozen pairs."""
+
+    from pressuretrace.patching.run_coding_route_patching import (
+        build_route_patching_config,
+        run_coding_route_patching,
+    )
+
+    config = build_route_patching_config(
+        frozen_root=frozen_root,
+        patch_pairs_path=patch_pairs_path,
+        manifest_path=manifest_path,
+        results_path=results_path,
+        output_path=output_path,
+        summary_txt_path=summary_txt_path,
+        summary_csv_path=summary_csv_path,
+        model_name=model_name,
+        thinking_mode=thinking_mode,
+        layers=tuple(int(part.strip()) for part in layers.split(",") if part.strip()),
+        pressure_types=tuple(part.strip() for part in pressure_types.split(",") if part.strip()),
+        max_pairs=max_pairs,
+    )
+    artifacts = run_coding_route_patching(config)
+    console.print(f"patching_results: [bold]{artifacts.output_path}[/bold]")
+    console.print(f"summary_txt: [bold]{artifacts.summary_txt_path}[/bold]")
+    console.print(f"summary_csv: [bold]{artifacts.summary_csv_path}[/bold]")
+    console.print(
+        "plots: "
+        f"[bold]{artifacts.rescue_delta_robust_prob_plot_path}[/bold], "
+        f"[bold]{artifacts.rescue_delta_margin_plot_path}[/bold], "
+        f"[bold]{artifacts.induction_delta_shortcut_prob_plot_path}[/bold]"
+    )
+
+
 @app.command("summarize")
 def summarize_command(
     input_path: Path = typer.Option(  # noqa: B008

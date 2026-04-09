@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+resolve_frozen_root() {
+  local candidate
+  for candidate in \
+    "${FROZEN_ROOT:-}" \
+    "$REPO_ROOT/pressuretrace-frozen/coding_v1_qwen-qwen3-14b_off_v1_behavior_final" \
+    "$REPO_ROOT/pressuretrace-frozen/coding_v1_qwen-qwen3-14b_off_neutralcue_tune_01" \
+    "$REPO_ROOT/pressuretrace-frozen/coding_v1_qwen-qwen3-14b_off"
+  do
+    if [[ -z "$candidate" ]]; then
+      continue
+    fi
+    if [[ -f "$candidate/data/manifests/coding_paper_slice_qwen-qwen3-14b_off.jsonl" ]] && \
+       [[ -f "$candidate/results/coding_paper_slice_qwen-qwen3-14b_off.jsonl" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
+  echo "${FROZEN_ROOT:-$REPO_ROOT/pressuretrace-frozen/coding_v1_qwen-qwen3-14b_off}"
+}
+
+FROZEN_ROOT="$(resolve_frozen_root)"
+PATCH_PAIRS_PATH="$FROZEN_ROOT/results/coding_patch_pairs_qwen-qwen3-14b_off.jsonl"
+
+echo "Frozen root: $FROZEN_ROOT"
+echo "Patch pairs: $PATCH_PAIRS_PATH"
+
+uv run python -m pressuretrace.patching.build_coding_patch_pairs \
+  --results-path "$FROZEN_ROOT/results/coding_paper_slice_qwen-qwen3-14b_off.jsonl" \
+  --control-slice-path "$FROZEN_ROOT/data/splits/coding_control_robust_slice_qwen-qwen3-14b_off.jsonl" \
+  --output-path "$PATCH_PAIRS_PATH"
+
+uv run python -m pressuretrace.patching.run_coding_route_patching \
+  --frozen-root "$FROZEN_ROOT" \
+  --patch-pairs-path "$PATCH_PAIRS_PATH"

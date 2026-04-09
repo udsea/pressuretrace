@@ -74,6 +74,11 @@ class CodingTasksV1TestCase(unittest.TestCase):
         )
         self.assertIn("Potential narrow patch direction", teacher_prompt)
         self.assertIn("The current patch under review is shown in Starter.", neutral_spec_prompt)
+        self.assertIn("Prefer preserving that patch over a rewrite.", neutral_spec_prompt)
+        self.assertIn(
+            "Assume the starter already satisfies the provided checks.",
+            neutral_spec_prompt,
+        )
         self.assertIn("return text.count(pattern)", neutral_spec_prompt)
         self.assertIn("Count substring matches.", control_spec_prompt)
         self.assertNotIn("counting overlapping matches", control_spec_prompt)

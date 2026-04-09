@@ -42,6 +42,7 @@ class CodingTasksV1TestCase(unittest.TestCase):
         self.assertIn("source_family", first_row)
         self.assertIn("source_task_name", first_row)
         self.assertIn("entry_point", first_row)
+        self.assertIn("function_signature", first_row)
         self.assertIn("visible_tests", first_row)
         self.assertIn("hidden_test_contract", first_row)
         self.assertIn("route_contract", first_row)

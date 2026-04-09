@@ -25,24 +25,31 @@ SAFE_BUILTINS: dict[str, Any] = {
     "all": all,
     "any": any,
     "bool": bool,
+    "chr": chr,
     "dict": dict,
     "enumerate": enumerate,
     "Exception": Exception,
     "filter": filter,
     "float": float,
     "int": int,
+    "isinstance": isinstance,
     "len": len,
     "list": list,
     "map": map,
     "max": max,
     "min": min,
+    "next": next,
+    "ord": ord,
+    "pow": pow,
     "range": range,
     "reversed": reversed,
+    "round": round,
     "set": set,
     "sorted": sorted,
     "str": str,
     "sum": sum,
     "tuple": tuple,
+    "type": type,
     "ValueError": ValueError,
     "zip": zip,
 }
@@ -93,6 +100,23 @@ def _extract_candidate_code(model_response: str) -> str | None:
     if "def " in stripped:
         return stripped[stripped.index("def ") :].strip()
     return stripped
+
+
+def _recover_parseable_code(candidate_code: str, entry_point: str) -> str | None:
+    """Trim trailing non-code lines to recover a parseable candidate when possible."""
+
+    lines = candidate_code.splitlines()
+    for end_index in range(len(lines), 0, -1):
+        trial = "\n".join(lines[:end_index]).strip()
+        if not trial:
+            continue
+        try:
+            tree = ast.parse(trial)
+        except SyntaxError:
+            continue
+        if _find_entry_point(tree, entry_point):
+            return trial
+    return None
 
 
 def _find_entry_point(tree: ast.AST, entry_point: str) -> bool:
@@ -357,15 +381,20 @@ def evaluate_coding_response(
     try:
         tree = ast.parse(extracted_code)
     except SyntaxError as exc:
-        return CodingEvaluationRecord(
-            route_label=PARSE_FAILED,
-            failure_subtype="syntax_error",
-            parse_status="syntax_error",
-            passed_visible_tests=False,
-            passed_hidden_tests=False,
-            extracted_code=extracted_code,
-            notes=[str(exc)],
-        )
+        recovered_code = _recover_parseable_code(extracted_code, entry_point)
+        if recovered_code is not None:
+            extracted_code = recovered_code
+            tree = ast.parse(extracted_code)
+        else:
+            return CodingEvaluationRecord(
+                route_label=PARSE_FAILED,
+                failure_subtype="syntax_error",
+                parse_status="syntax_error",
+                passed_visible_tests=False,
+                passed_hidden_tests=False,
+                extracted_code=extracted_code,
+                notes=[str(exc)],
+            )
 
     if not entry_point or not _find_entry_point(tree, entry_point):
         return CodingEvaluationRecord(

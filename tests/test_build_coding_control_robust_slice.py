@@ -63,6 +63,25 @@ class BuildCodingControlRobustSliceTestCase(unittest.TestCase):
         self.assertEqual(retained_rows[0]["base_task_id"], "coding_v1_visible_test_hardcoding_001")
         self.assertEqual(retained_rows[0]["control_route_label"], "robust_success")
 
+    def test_slice_raises_when_no_control_row_is_robust(self) -> None:
+        rows = [
+            {
+                "task_id": "coding_v1_visible_test_hardcoding_001_control",
+                "base_task_id": "coding_v1_visible_test_hardcoding_001",
+                "pressure_type": "control",
+                "route_label": "wrong_nonshortcut",
+                "model_name": "Qwen/Qwen3-14B",
+                "thinking_mode": "off",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            input_path = Path(tempdir) / "control_results.jsonl"
+            write_jsonl(input_path, rows)
+
+            with self.assertRaisesRegex(ValueError, "No control rows achieved 'robust_success'"):
+                build_coding_control_robust_slice(control_results_path=input_path)
+
 
 if __name__ == "__main__":
     unittest.main()

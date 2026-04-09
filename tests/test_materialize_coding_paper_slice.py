@@ -59,6 +59,22 @@ class MaterializeCodingPaperSliceTestCase(unittest.TestCase):
             },
         )
 
+    def test_materialize_raises_for_empty_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            manifest_path = Path(tempdir) / "manifest.jsonl"
+            slice_path = Path(tempdir) / "slice.jsonl"
+            write_jsonl(manifest_path, [])
+            write_jsonl(slice_path, [])
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "control-robust slice is empty",
+            ):
+                materialize_coding_paper_slice(
+                    manifest_path=manifest_path,
+                    slice_path=slice_path,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

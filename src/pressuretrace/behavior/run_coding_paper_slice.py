@@ -145,6 +145,9 @@ def _run_coding_manifest_rows(
 ) -> CodingBehaviorArtifacts:
     """Run inference and evaluation over an already selected set of coding rows."""
 
+    if not manifest_rows:
+        raise ValueError("Selected coding manifest rows are empty; nothing to run.")
+
     results_path = _prepare_results_file(
         output_path or _default_output_path(model_name=model_name, thinking_mode=thinking_mode)
     )

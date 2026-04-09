@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -80,4 +81,13 @@ def build_coding_control_robust_slice(
         thinking_mode=thinking_mode,
     )
     retained_rows = [retained_by_base_task[key] for key in sorted(retained_by_base_task)]
+    if not retained_rows:
+        route_counts = Counter(str(row.get("route_label", "unknown")) for row in control_rows)
+        count_summary = ", ".join(
+            f"{label}={route_counts[label]}" for label in sorted(route_counts)
+        )
+        raise ValueError(
+            "No control rows achieved 'robust_success'; cannot build a control-robust coding "
+            f"slice. Observed control route counts: {count_summary}."
+        )
     return write_jsonl(destination, retained_rows)

@@ -36,11 +36,13 @@ def materialize_coding_paper_slice(
     retained_base_task_ids = {
         str(row.get("base_task_id", "")) for row in slice_rows if row.get("base_task_id")
     }
-    if not retained_base_task_ids and slice_rows:
-        raise ValueError("Slice rows are present but none contain base_task_id.")
+    if not retained_base_task_ids:
+        raise ValueError("Coding control-robust slice is empty; cannot materialize a paper slice.")
 
     filtered_rows = [
         row for row in manifest_rows if str(row.get("base_task_id", "")) in retained_base_task_ids
     ]
+    if not filtered_rows:
+        raise ValueError("No coding manifest rows matched the retained control-robust slice.")
     destination = output_path or _default_paper_slice_manifest_path(slice_path)
     return write_jsonl(destination, filtered_rows)

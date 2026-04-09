@@ -31,6 +31,9 @@ logs/
 pressuretrace-frozen/**/results/reasoning_probe_hidden_states_*.jsonl
 pressuretrace-frozen/**/results/reasoning_probe_dataset_*.jsonl
 
+pressuretrace-results/
+pressuretrace-results-v2/
+
 build/
 dist/
 *.egg-info/

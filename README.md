@@ -6,14 +6,23 @@ PressureTrace is a research scaffold for studying pressure-induced transitions f
 
 PressureTrace is intentionally not a template-only benchmark. The goal is to start from reputable datasets with real task structure, then apply controlled transformations that preserve task legitimacy while introducing pressure conditions, oversight gaps, or shortcut opportunities. That keeps the benchmark closer to realistic failure modes than synthetic prompt soup.
 
-## Current V1 Scope
+## Current Scope
 
 - Reasoning shortcut-seeking under pressure using GSM8K-style math reasoning tasks.
+- Reasoning v2 paper-slice workflow with frozen artifacts, probes, and route patching.
 - Coding spec-gaming under pressure using HumanEval-style and MBPP-style coding tasks.
 
 ## Status
 
-This repository is an early scaffold. The directory structure, CLI surface, JSONL data flow, loaders, and evaluation interfaces are in place, but the full research logic for transformation, inference, coding evaluation, probe extraction, and activation patching is still TODO.
+This repository now has an active reasoning-family v2 path with:
+
+- paired manifest generation
+- control-robust slice construction
+- frozen paper-slice artifacts
+- hidden-state probe training
+- first-pass route patching
+
+The coding-family side is still lighter-weight and remains closer to scaffold status.
 
 ## Setup
 
@@ -54,9 +63,11 @@ uv run pressuretrace summarize --input-path results/reasoning_pilot_test_medium.
 
 - `src/pressuretrace/`: package source code.
 - `data/`: raw, intermediate, processed, manifest, and split artifacts.
-- `results/`: benchmark outputs, probe artifacts, and summaries.
-- `paper/`: short working spec for PressureTrace v1.
-- `scripts/`: bootstrap and pilot wrappers.
+- `pressuretrace-frozen/`: frozen reasoning-family bundles that the current probe and patching workflows read.
+- `results/`: ignored local run outputs.
+- `archive/`: archived legacy snapshots that are kept for provenance but are not part of the active runtime path.
+- `paper/`: working notes and specs.
+- `scripts/`: bootstrap, benchmark, sweep, replication, and analysis wrappers.
 
 ## License
 

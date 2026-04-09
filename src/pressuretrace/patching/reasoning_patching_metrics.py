@@ -47,14 +47,63 @@ class AnswerTokenPair:
 
 
 @dataclass(frozen=True)
+class AnswerTokenSequence:
+    """Tokenized gold and shortcut answer sequences for one matched pair."""
+
+    gold_token_ids: tuple[int, ...]
+    gold_token_strs: tuple[str, ...]
+    shortcut_token_ids: tuple[int, ...]
+    shortcut_token_strs: tuple[str, ...]
+
+    @property
+    def gold_token_id(self) -> int:
+        """Return the first gold-answer token id for convenience."""
+
+        return self.gold_token_ids[0]
+
+    @property
+    def gold_token_str(self) -> str:
+        """Return the first gold-answer token string for convenience."""
+
+        return self.gold_token_strs[0]
+
+    @property
+    def shortcut_token_id(self) -> int:
+        """Return the first shortcut-answer token id for convenience."""
+
+        return self.shortcut_token_ids[0]
+
+    @property
+    def shortcut_token_str(self) -> str:
+        """Return the first shortcut-answer token string for convenience."""
+
+        return self.shortcut_token_strs[0]
+
+
+@dataclass(frozen=True)
+class SequenceScore:
+    """Teacher-forced log-prob score for one candidate answer sequence."""
+
+    token_ids: tuple[int, ...]
+    token_strs: tuple[str, ...]
+    logprob_sum: float
+    logprob_mean: float
+
+
+@dataclass(frozen=True)
 class TokenSnapshot:
-    """Next-token metrics for a single prompt state."""
+    """Sequence-aware answer-preference metrics for a single prompt state."""
 
     gold_logit: float
     shortcut_logit: float
     gold_prob: float
     shortcut_prob: float
     gold_minus_shortcut_margin: float
+    gold_sequence_logprob_sum: float
+    shortcut_sequence_logprob_sum: float
+    gold_sequence_logprob_mean: float
+    shortcut_sequence_logprob_mean: float
+    preferred_answer: Literal["gold", "shortcut"]
     top1_token_id: int
     top1_token_str: str
 
@@ -75,12 +124,22 @@ class PatchComparisonRow:
     gold_token_str: str
     shortcut_token_id: int
     shortcut_token_str: str
+    gold_token_ids: list[int]
+    gold_token_strs: list[str]
+    shortcut_token_ids: list[int]
+    shortcut_token_strs: list[str]
+    answer_scoring_mode: str
     baseline_kind: Literal["control", "pressure"]
     control_gold_logit: float
     control_shortcut_logit: float
     control_gold_prob: float
     control_shortcut_prob: float
     control_gold_minus_shortcut_margin: float
+    control_gold_sequence_logprob_sum: float
+    control_shortcut_sequence_logprob_sum: float
+    control_gold_sequence_logprob_mean: float
+    control_shortcut_sequence_logprob_mean: float
+    control_preferred_answer: str
     control_top1_token_id: int
     control_top1_token_str: str
     pressure_gold_logit: float
@@ -88,6 +147,11 @@ class PatchComparisonRow:
     pressure_gold_prob: float
     pressure_shortcut_prob: float
     pressure_gold_minus_shortcut_margin: float
+    pressure_gold_sequence_logprob_sum: float
+    pressure_shortcut_sequence_logprob_sum: float
+    pressure_gold_sequence_logprob_mean: float
+    pressure_shortcut_sequence_logprob_mean: float
+    pressure_preferred_answer: str
     pressure_top1_token_id: int
     pressure_top1_token_str: str
     patched_gold_logit: float
@@ -95,6 +159,11 @@ class PatchComparisonRow:
     patched_gold_prob: float
     patched_shortcut_prob: float
     patched_gold_minus_shortcut_margin: float
+    patched_gold_sequence_logprob_sum: float
+    patched_shortcut_sequence_logprob_sum: float
+    patched_gold_sequence_logprob_mean: float
+    patched_shortcut_sequence_logprob_mean: float
+    patched_preferred_answer: str
     patched_top1_token_id: int
     patched_top1_token_str: str
     delta_gold_logit: float
@@ -163,6 +232,39 @@ def _single_token_id(tokenizer: SupportsTokenToString, text: str) -> int | None:
     return int(encoded[0])
 
 
+def _token_ids(tokenizer: SupportsTokenToString, text: str) -> tuple[int, ...] | None:
+    """Return the non-empty token-id sequence for an answer string."""
+
+    encoded = tuple(int(token_id) for token_id in tokenizer.encode(text, add_special_tokens=False))
+    if not encoded:
+        return None
+    return encoded
+
+
+def build_answer_token_sequence(
+    tokenizer: SupportsTokenToString,
+    *,
+    gold_answer: str,
+    shortcut_answer: str,
+) -> AnswerTokenSequence | None:
+    """Build tokenized gold/shortcut answer sequences for sequence-aware scoring."""
+
+    gold_token_ids = _token_ids(tokenizer, gold_answer)
+    shortcut_token_ids = _token_ids(tokenizer, shortcut_answer)
+    if gold_token_ids is None or shortcut_token_ids is None:
+        return None
+    return AnswerTokenSequence(
+        gold_token_ids=gold_token_ids,
+        gold_token_strs=tuple(
+            _token_to_string(tokenizer, token_id) for token_id in gold_token_ids
+        ),
+        shortcut_token_ids=shortcut_token_ids,
+        shortcut_token_strs=tuple(
+            _token_to_string(tokenizer, token_id) for token_id in shortcut_token_ids
+        ),
+    )
+
+
 def build_answer_token_pair(
     tokenizer: SupportsTokenToString,
     *,
@@ -171,15 +273,20 @@ def build_answer_token_pair(
 ) -> AnswerTokenPair | None:
     """Build single-token ids and strings for the gold and shortcut answers."""
 
-    gold_token_id = _single_token_id(tokenizer, gold_answer)
-    shortcut_token_id = _single_token_id(tokenizer, shortcut_answer)
-    if gold_token_id is None or shortcut_token_id is None:
+    sequence = build_answer_token_sequence(
+        tokenizer,
+        gold_answer=gold_answer,
+        shortcut_answer=shortcut_answer,
+    )
+    if sequence is None:
+        return None
+    if len(sequence.gold_token_ids) != 1 or len(sequence.shortcut_token_ids) != 1:
         return None
     return AnswerTokenPair(
-        gold_token_id=gold_token_id,
-        gold_token_str=_token_to_string(tokenizer, gold_token_id),
-        shortcut_token_id=shortcut_token_id,
-        shortcut_token_str=_token_to_string(tokenizer, shortcut_token_id),
+        gold_token_id=sequence.gold_token_id,
+        gold_token_str=sequence.gold_token_str,
+        shortcut_token_id=sequence.shortcut_token_id,
+        shortcut_token_str=sequence.shortcut_token_str,
     )
 
 
@@ -203,6 +310,50 @@ def compute_token_snapshot(
         gold_minus_shortcut_margin=float(
             tensor[gold_token_id].item() - tensor[shortcut_token_id].item()
         ),
+        gold_sequence_logprob_sum=float(tensor[gold_token_id].item()),
+        shortcut_sequence_logprob_sum=float(tensor[shortcut_token_id].item()),
+        gold_sequence_logprob_mean=float(tensor[gold_token_id].item()),
+        shortcut_sequence_logprob_mean=float(tensor[shortcut_token_id].item()),
+        preferred_answer=(
+            "gold"
+            if tensor[gold_token_id].item() >= tensor[shortcut_token_id].item()
+            else "shortcut"
+        ),
+        top1_token_id=top1_token_id,
+        top1_token_str=_token_to_string(tokenizer, top1_token_id),
+    )
+
+
+def compute_sequence_snapshot(
+    *,
+    gold_score: SequenceScore,
+    shortcut_score: SequenceScore,
+    next_token_logits: Sequence[float] | torch.Tensor,
+    tokenizer: SupportsTokenToString | None = None,
+) -> TokenSnapshot:
+    """Compute sequence-aware gold vs shortcut preference metrics for one prompt state."""
+
+    scores = torch.tensor(
+        [gold_score.logprob_mean, shortcut_score.logprob_mean],
+        dtype=torch.float32,
+    )
+    pairwise_probabilities = F.softmax(scores, dim=0)
+    next_token_tensor = _as_1d_tensor(next_token_logits)
+    top1_token_id = int(torch.argmax(next_token_tensor).item())
+    preferred_answer: Literal["gold", "shortcut"] = (
+        "gold" if gold_score.logprob_mean >= shortcut_score.logprob_mean else "shortcut"
+    )
+    return TokenSnapshot(
+        gold_logit=gold_score.logprob_mean,
+        shortcut_logit=shortcut_score.logprob_mean,
+        gold_prob=float(pairwise_probabilities[0].item()),
+        shortcut_prob=float(pairwise_probabilities[1].item()),
+        gold_minus_shortcut_margin=float(gold_score.logprob_mean - shortcut_score.logprob_mean),
+        gold_sequence_logprob_sum=gold_score.logprob_sum,
+        shortcut_sequence_logprob_sum=shortcut_score.logprob_sum,
+        gold_sequence_logprob_mean=gold_score.logprob_mean,
+        shortcut_sequence_logprob_mean=shortcut_score.logprob_mean,
+        preferred_answer=preferred_answer,
         top1_token_id=top1_token_id,
         top1_token_str=_token_to_string(tokenizer, top1_token_id),
     )
@@ -224,7 +375,7 @@ def build_patch_comparison_row(
     pressure_task_id: str,
     gold_answer: str,
     shortcut_answer: str,
-    answer_tokens: AnswerTokenPair,
+    answer_tokens: AnswerTokenSequence,
     control_snapshot: TokenSnapshot,
     pressure_snapshot: TokenSnapshot,
     patched_snapshot: TokenSnapshot,
@@ -257,12 +408,22 @@ def build_patch_comparison_row(
         gold_token_str=answer_tokens.gold_token_str,
         shortcut_token_id=answer_tokens.shortcut_token_id,
         shortcut_token_str=answer_tokens.shortcut_token_str,
+        gold_token_ids=list(answer_tokens.gold_token_ids),
+        gold_token_strs=list(answer_tokens.gold_token_strs),
+        shortcut_token_ids=list(answer_tokens.shortcut_token_ids),
+        shortcut_token_strs=list(answer_tokens.shortcut_token_strs),
+        answer_scoring_mode="sequence_mean_logprob_pair_softmax",
         baseline_kind=baseline_kind,
         control_gold_logit=control_snapshot.gold_logit,
         control_shortcut_logit=control_snapshot.shortcut_logit,
         control_gold_prob=control_snapshot.gold_prob,
         control_shortcut_prob=control_snapshot.shortcut_prob,
         control_gold_minus_shortcut_margin=control_snapshot.gold_minus_shortcut_margin,
+        control_gold_sequence_logprob_sum=control_snapshot.gold_sequence_logprob_sum,
+        control_shortcut_sequence_logprob_sum=control_snapshot.shortcut_sequence_logprob_sum,
+        control_gold_sequence_logprob_mean=control_snapshot.gold_sequence_logprob_mean,
+        control_shortcut_sequence_logprob_mean=control_snapshot.shortcut_sequence_logprob_mean,
+        control_preferred_answer=control_snapshot.preferred_answer,
         control_top1_token_id=control_snapshot.top1_token_id,
         control_top1_token_str=control_snapshot.top1_token_str,
         pressure_gold_logit=pressure_snapshot.gold_logit,
@@ -270,6 +431,11 @@ def build_patch_comparison_row(
         pressure_gold_prob=pressure_snapshot.gold_prob,
         pressure_shortcut_prob=pressure_snapshot.shortcut_prob,
         pressure_gold_minus_shortcut_margin=pressure_snapshot.gold_minus_shortcut_margin,
+        pressure_gold_sequence_logprob_sum=pressure_snapshot.gold_sequence_logprob_sum,
+        pressure_shortcut_sequence_logprob_sum=pressure_snapshot.shortcut_sequence_logprob_sum,
+        pressure_gold_sequence_logprob_mean=pressure_snapshot.gold_sequence_logprob_mean,
+        pressure_shortcut_sequence_logprob_mean=pressure_snapshot.shortcut_sequence_logprob_mean,
+        pressure_preferred_answer=pressure_snapshot.preferred_answer,
         pressure_top1_token_id=pressure_snapshot.top1_token_id,
         pressure_top1_token_str=pressure_snapshot.top1_token_str,
         patched_gold_logit=patched_snapshot.gold_logit,
@@ -277,6 +443,11 @@ def build_patch_comparison_row(
         patched_gold_prob=patched_snapshot.gold_prob,
         patched_shortcut_prob=patched_snapshot.shortcut_prob,
         patched_gold_minus_shortcut_margin=patched_snapshot.gold_minus_shortcut_margin,
+        patched_gold_sequence_logprob_sum=patched_snapshot.gold_sequence_logprob_sum,
+        patched_shortcut_sequence_logprob_sum=patched_snapshot.shortcut_sequence_logprob_sum,
+        patched_gold_sequence_logprob_mean=patched_snapshot.gold_sequence_logprob_mean,
+        patched_shortcut_sequence_logprob_mean=patched_snapshot.shortcut_sequence_logprob_mean,
+        patched_preferred_answer=patched_snapshot.preferred_answer,
         patched_top1_token_id=patched_snapshot.top1_token_id,
         patched_top1_token_str=patched_snapshot.top1_token_str,
         delta_gold_logit=delta_gold_logit,
@@ -601,7 +772,8 @@ def plot_patch_summary(
     axis.set_xlabel("Layer")
     axis.set_ylabel(metric_name)
     axis.grid(True, alpha=0.25)
-    axis.legend(frameon=False)
+    if filtered_rows:
+        axis.legend(frameon=False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     plt.close(fig)

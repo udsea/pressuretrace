@@ -203,6 +203,28 @@ def select_reasoning_probe_rows(
     return selected_rows
 
 
+def reasoning_probe_output_counts(
+    manifest_rows: Sequence[dict[str, Any]],
+    result_rows: Sequence[dict[str, Any]],
+    *,
+    model_name: str = REASONING_V2_MODEL_NAME,
+    thinking_mode: str = REASONING_V2_THINKING_MODE,
+    layers: Sequence[int] = REASONING_PROBE_LAYERS,
+    representations: Sequence[str] = REASONING_PROBE_REPRESENTATIONS,
+) -> tuple[int, int]:
+    """Return expected eligible-episode and hidden-state row counts for stage 5."""
+
+    selected_rows = select_reasoning_probe_rows(
+        manifest_rows,
+        result_rows,
+        model_name=model_name,
+        thinking_mode=thinking_mode,
+    )
+    episode_count = len(selected_rows)
+    output_row_count = episode_count * len(tuple(layers)) * len(tuple(representations))
+    return episode_count, output_row_count
+
+
 def _normalize_hidden_state_tensor(layer_hidden_state: torch.Tensor) -> torch.Tensor:
     """Reduce a per-layer hidden-state tensor to the single-example sequence view."""
 
@@ -280,8 +302,8 @@ def extract_reasoning_hidden_states(
         1 if str(row["route_label"]) == "shortcut_followed" else 0 for row in selected_rows
     )
 
-    output_path = prepare_results_file(config.output_path)
     model, tokenizer = _load_model_and_tokenizer(config.model_name)
+    output_path = prepare_results_file(config.output_path)
     print(f"Eligible rows: {eligible_count}", flush=True)
     print(
         "Per-pressure counts: "

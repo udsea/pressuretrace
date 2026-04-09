@@ -28,6 +28,7 @@ from pressuretrace.probes.build_reasoning_probe_dataset import build_reasoning_p
 from pressuretrace.probes.extract_hidden_states_reasoning import (
     ReasoningProbeExtractionConfig,
     extract_reasoning_hidden_states,
+    reasoning_probe_output_counts,
 )
 from pressuretrace.probes.train_reasoning_probes import ProbeTrainingConfig, train_reasoning_probes
 from pressuretrace.utils.io import ensure_directory, read_jsonl
@@ -255,6 +256,25 @@ def _has_expected_rows(path: Path, expected_rows: int | None) -> bool:
     return actual_rows == expected_rows and actual_rows is not None
 
 
+def _expected_probe_output_rows(
+    *,
+    manifest_path: Path,
+    results_path: Path,
+    model_name: str,
+    thinking_mode: str,
+) -> tuple[int, int]:
+    """Return expected eligible-episode and row counts for stage-5 probe artifacts."""
+
+    manifest_rows = [dict(row) for row in read_jsonl(manifest_path)]
+    result_rows = [dict(row) for row in read_jsonl(results_path)]
+    return reasoning_probe_output_counts(
+        manifest_rows,
+        result_rows,
+        model_name=model_name,
+        thinking_mode=thinking_mode,
+    )
+
+
 def _log(message: str, *, console: Console | None = None) -> None:
     """Print a line immediately, using rich when available."""
 
@@ -317,6 +337,21 @@ def _print_rebuild_due_to_upstream(path: Path, *, console: Console | None = None
         _log(f"  upstream changed; recomputing {path}", console=console)
 
 
+def _route_patching_results_are_current(path: Path) -> bool:
+    """Return whether an existing route-patching JSONL looks sequence-aware and current."""
+
+    if not _path_is_ready(path):
+        return False
+    try:
+        rows = read_jsonl(path)
+    except Exception:
+        return False
+    if not rows:
+        return False
+    first_row = dict(rows[0])
+    return "answer_scoring_mode" in first_row and "gold_token_ids" in first_row
+
+
 def _write_run_info(
     config: ReasoningModelPipelineConfig,
     paths: ReasoningReplicationPaths,
@@ -324,6 +359,17 @@ def _write_run_info(
 ) -> Path:
     """Write a compact run-info manifest for the replicated frozen root."""
 
+    artifact_rows = {
+        "control_only_results_rows": _count_jsonl_rows(paths.control_results),
+        "control_robust_slice_rows": _count_jsonl_rows(paths.robust_slice),
+        "paper_slice_manifest_rows": _count_jsonl_rows(paths.paper_manifest),
+        "paper_slice_results_rows": _count_jsonl_rows(paths.paper_results),
+        "probe_hidden_states_rows": _count_jsonl_rows(paths.probe_hidden_states),
+        "probe_dataset_rows": _count_jsonl_rows(paths.probe_dataset),
+        "probe_metrics_rows": _count_jsonl_rows(paths.probe_metrics_jsonl),
+        "patch_pairs_rows": _count_jsonl_rows(paths.patch_pairs),
+        "route_patching_rows": _count_jsonl_rows(paths.route_patching_results),
+    }
     lines = [
         f"model={config.model_name}",
         f"thinking_mode={config.thinking_mode}",
@@ -358,6 +404,9 @@ def _write_run_info(
         f"skip_patching={config.skip_patching}",
         f"reuse_pool={config.reuse_pool}",
     ]
+    lines.extend(
+        f"{key}={value if value is not None else 'missing'}" for key, value in artifact_rows.items()
+    )
     paths.run_info_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return paths.run_info_txt
 
@@ -479,16 +528,28 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
         _log("Stage 5/6: probe pipeline skipped", console=console)
     else:
         _log("Stage 5/6: run probe pipeline", console=console)
+        _, expected_probe_rows = _expected_probe_output_rows(
+            manifest_path=paths.paper_manifest,
+            results_path=paths.paper_results,
+            model_name=config.model_name,
+            thinking_mode=config.thinking_mode,
+        )
         probe_hidden_states_refreshed = False
         if (
             not paper_results_refreshed
             and config.resume
-            and _path_is_ready(paths.probe_hidden_states)
+            and _has_expected_rows(paths.probe_hidden_states, expected_probe_rows)
         ):
             _print_skip_existing(paths.probe_hidden_states, console=console)
         else:
             if paper_results_refreshed:
                 _print_rebuild_due_to_upstream(paths.probe_hidden_states, console=console)
+            elif config.resume and paths.probe_hidden_states.exists():
+                _print_rebuild_existing(
+                    paths.probe_hidden_states,
+                    expected_rows=expected_probe_rows,
+                    console=console,
+                )
             _log(f"  hidden-state extraction -> {paths.probe_hidden_states}", console=console)
             extract_reasoning_hidden_states(
                 ReasoningProbeExtractionConfig(
@@ -506,12 +567,18 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
             not paper_results_refreshed
             and not probe_hidden_states_refreshed
             and config.resume
-            and _path_is_ready(paths.probe_dataset)
+            and _has_expected_rows(paths.probe_dataset, expected_probe_rows)
         ):
             _print_skip_existing(paths.probe_dataset, console=console)
         else:
             if paper_results_refreshed or probe_hidden_states_refreshed:
                 _print_rebuild_due_to_upstream(paths.probe_dataset, console=console)
+            elif config.resume and paths.probe_dataset.exists():
+                _print_rebuild_existing(
+                    paths.probe_dataset,
+                    expected_rows=expected_probe_rows,
+                    console=console,
+                )
             _log(f"  probe dataset -> {paths.probe_dataset}", console=console)
             build_reasoning_probe_dataset(
                 input_path=paths.probe_hidden_states,
@@ -570,7 +637,7 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
             patch_pairs_refreshed = True
 
         route_patching_ready = (
-            _path_is_ready(paths.route_patching_results)
+            _route_patching_results_are_current(paths.route_patching_results)
             and _path_is_ready(paths.route_patching_summary_txt)
             and _path_is_ready(paths.route_patching_summary_csv)
             and _path_is_ready(paths.route_patching_rescue_delta_gold_prob_plot)
@@ -587,6 +654,12 @@ def run_reasoning_model_pipeline(config: ReasoningModelPipelineConfig) -> Reason
         else:
             if paper_results_refreshed or patch_pairs_refreshed:
                 _print_rebuild_due_to_upstream(paths.route_patching_results, console=console)
+            elif config.resume and paths.route_patching_results.exists():
+                _log(
+                    "  existing route patching output is stale; "
+                    f"recomputing {paths.route_patching_results}",
+                    console=console,
+                )
             _log(f"  route patching -> {paths.route_patching_results}", console=console)
             run_reasoning_route_patching(
                 build_route_patching_config(

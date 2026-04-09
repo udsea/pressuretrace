@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pressuretrace.behavior.reasoning_runtime import (
@@ -17,6 +19,7 @@ from pressuretrace.behavior.reasoning_runtime import (
     manual_model_load_kwargs,
     model_input_device,
 )
+from pressuretrace.patching.reasoning_patching_metrics import SequenceScore
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,23 @@ class SingleTokenAnswer:
     matched_text: str
     token_id: int
     token_str: str
+
+
+@dataclass(frozen=True)
+class ContinuationInputs:
+    """Prompt inputs extended with a teacher-forced answer continuation."""
+
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    final_prompt_token_index: int
+
+    def to_model_inputs(self) -> dict[str, torch.Tensor]:
+        """Return model-call kwargs for the stored continuation tensors."""
+
+        return {
+            "input_ids": self.input_ids,
+            "attention_mask": self.attention_mask,
+        }
 
 
 def load_model_and_tokenizer(
@@ -232,9 +252,27 @@ def _forward_prompt(
 ) -> Any:
     """Run a prompt forward pass through the model."""
 
+    return _forward_inputs(
+        bundle,
+        prompt_inputs.input_ids,
+        prompt_inputs.attention_mask,
+        output_hidden_states=output_hidden_states,
+    )
+
+
+def _forward_inputs(
+    bundle: ReasoningPatchingBundle,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    *,
+    output_hidden_states: bool,
+) -> Any:
+    """Run a forward pass through the model for arbitrary prepared inputs."""
+
     with torch.no_grad():
         return bundle.model(
-            **prompt_inputs.to_model_inputs(),
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             output_hidden_states=output_hidden_states,
             use_cache=False,
             return_dict=True,
@@ -261,6 +299,27 @@ def get_next_token_logits_from_outputs(outputs: Any) -> torch.Tensor:
     """Return next-token logits from an existing model output object."""
 
     return _next_token_logits_from_outputs(outputs)
+
+
+def build_continuation_inputs(
+    prompt_inputs: PromptInputs,
+    answer_token_ids: Sequence[int],
+) -> ContinuationInputs:
+    """Append answer tokens to a prompt while preserving the prompt-final token index."""
+
+    if not answer_token_ids:
+        raise ValueError("Answer continuation must contain at least one token.")
+    continuation = torch.tensor(
+        [list(int(token_id) for token_id in answer_token_ids)],
+        dtype=prompt_inputs.input_ids.dtype,
+        device=prompt_inputs.input_ids.device,
+    )
+    continuation_mask = torch.ones_like(continuation, dtype=prompt_inputs.attention_mask.dtype)
+    return ContinuationInputs(
+        input_ids=torch.cat([prompt_inputs.input_ids, continuation], dim=-1),
+        attention_mask=torch.cat([prompt_inputs.attention_mask, continuation_mask], dim=-1),
+        final_prompt_token_index=prompt_inputs.final_token_index,
+    )
 
 
 def get_prompt_hidden_states(
@@ -309,14 +368,16 @@ def final_token_activation_for_layer(
 extract_final_token_activation = get_final_token_activation
 
 
-def patch_final_token_activation(
+def _patch_forward_outputs(
     bundle: ReasoningPatchingBundle,
-    prompt_inputs: PromptInputs,
     *,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    final_token_index: int,
     layer: int,
     donor_final_token_activation: torch.Tensor,
-) -> torch.Tensor:
-    """Patch the final prompt-token activation at one layer and return next-token logits."""
+) -> Any:
+    """Run a forward pass while replacing one final-prompt-token activation."""
 
     resolved_layer = resolve_layer_index(bundle.model, layer)
     target_module = resolve_decoder_layer_module(bundle.model, resolved_layer)
@@ -325,7 +386,7 @@ def patch_final_token_activation(
     def _hook(_module: Any, _args: tuple[Any, ...], output: Any) -> Any:
         if torch.is_tensor(output):
             patched_hidden_state = output.clone()
-            patched_hidden_state[:, prompt_inputs.final_token_index, :] = donor_activation.to(
+            patched_hidden_state[:, final_token_index, :] = donor_activation.to(
                 device=patched_hidden_state.device,
                 dtype=patched_hidden_state.dtype,
             )
@@ -336,7 +397,7 @@ def patch_final_token_activation(
             if not torch.is_tensor(hidden_state):
                 raise TypeError("Expected the decoder block output to contain hidden states.")
             patched_hidden_state = hidden_state.clone()
-            patched_hidden_state[:, prompt_inputs.final_token_index, :] = donor_activation.to(
+            patched_hidden_state[:, final_token_index, :] = donor_activation.to(
                 device=patched_hidden_state.device,
                 dtype=patched_hidden_state.dtype,
             )
@@ -349,7 +410,88 @@ def patch_final_token_activation(
 
     handle = target_module.register_forward_hook(_hook)
     try:
-        outputs = _forward_prompt(bundle, prompt_inputs, output_hidden_states=False)
+        outputs = _forward_inputs(
+            bundle,
+            input_ids,
+            attention_mask,
+            output_hidden_states=False,
+        )
     finally:
         handle.remove()
+    return outputs
+
+
+def patch_final_token_activation(
+    bundle: ReasoningPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    layer: int,
+    donor_final_token_activation: torch.Tensor,
+) -> torch.Tensor:
+    """Patch the final prompt-token activation at one layer and return next-token logits."""
+    outputs = _patch_forward_outputs(
+        bundle,
+        input_ids=prompt_inputs.input_ids,
+        attention_mask=prompt_inputs.attention_mask,
+        final_token_index=prompt_inputs.final_token_index,
+        layer=layer,
+        donor_final_token_activation=donor_final_token_activation,
+    )
     return _next_token_logits_from_outputs(outputs)
+
+
+def score_answer_token_sequence(
+    bundle: ReasoningPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    answer_token_ids: Sequence[int],
+    layer: int | None = None,
+    donor_final_token_activation: torch.Tensor | None = None,
+) -> SequenceScore:
+    """Score an answer sequence with teacher forcing, optionally under a patch."""
+
+    continuation_inputs = build_continuation_inputs(prompt_inputs, answer_token_ids)
+    if layer is None:
+        outputs = _forward_inputs(
+            bundle,
+            continuation_inputs.input_ids,
+            continuation_inputs.attention_mask,
+            output_hidden_states=False,
+        )
+    else:
+        if donor_final_token_activation is None:
+            raise ValueError("A donor activation is required when scoring a patched sequence.")
+        outputs = _patch_forward_outputs(
+            bundle,
+            input_ids=continuation_inputs.input_ids,
+            attention_mask=continuation_inputs.attention_mask,
+            final_token_index=continuation_inputs.final_prompt_token_index,
+            layer=layer,
+            donor_final_token_activation=donor_final_token_activation,
+        )
+
+    prompt_length = int(prompt_inputs.input_ids.shape[-1])
+    answer_length = len(answer_token_ids)
+    prediction_positions = torch.arange(
+        prompt_length - 1,
+        prompt_length - 1 + answer_length,
+        device=outputs.logits.device,
+    )
+    target_ids = torch.tensor(
+        list(int(token_id) for token_id in answer_token_ids),
+        dtype=torch.long,
+        device=outputs.logits.device,
+    )
+    token_logits = outputs.logits[0, prediction_positions, :]
+    token_logprobs = F.log_softmax(token_logits, dim=-1)
+    gathered_logprobs = token_logprobs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
+    token_strs = tuple(
+        token_id_to_string(bundle.tokenizer, int(token_id))
+        for token_id in target_ids
+    )
+    return SequenceScore(
+        token_ids=tuple(int(token_id) for token_id in answer_token_ids),
+        token_strs=token_strs,
+        logprob_sum=float(gathered_logprobs.sum().item()),
+        logprob_mean=float(gathered_logprobs.mean().item()),
+    )

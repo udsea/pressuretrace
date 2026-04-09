@@ -9,6 +9,7 @@ from unittest.mock import patch
 import torch
 
 from pressuretrace.patching.build_reasoning_patch_pairs import ReasoningPatchPair
+from pressuretrace.patching.reasoning_patching_metrics import SequenceScore
 from pressuretrace.patching.run_reasoning_route_patching import (
     build_route_patching_config,
     run_reasoning_route_patching,
@@ -56,7 +57,7 @@ class RunReasoningRoutePatchingTestCase(unittest.TestCase):
             metadata={"base_task_id": base_task_id, "pairing_strategy": "test"},
         )
 
-    def test_select_eligible_patch_pairs_filters_multi_token_answers(self) -> None:
+    def test_select_eligible_patch_pairs_accepts_multi_token_answers(self) -> None:
         pairs = [
             self._make_pair("base_1", "teacher_anchor", "0", "1"),
             self._make_pair("base_2", "neutral_wrong_answer_cue", "12", "4"),
@@ -65,10 +66,11 @@ class RunReasoningRoutePatchingTestCase(unittest.TestCase):
 
         eligible_pairs, skipped_tokenization = select_eligible_patch_pairs(pairs, tokenizer)
 
-        self.assertEqual(len(eligible_pairs), 1)
-        self.assertEqual(skipped_tokenization, 1)
+        self.assertEqual(len(eligible_pairs), 2)
+        self.assertEqual(skipped_tokenization, 0)
         self.assertEqual(eligible_pairs[0].answer_tokens.gold_token_id, 0)
         self.assertEqual(eligible_pairs[0].answer_tokens.shortcut_token_id, 1)
+        self.assertEqual(eligible_pairs[1].answer_tokens.gold_token_ids, (12, 13))
 
     def test_run_reasoning_route_patching_writes_outputs(self) -> None:
         pair_rows = [
@@ -132,6 +134,33 @@ class RunReasoningRoutePatchingTestCase(unittest.TestCase):
                 return torch.tensor([2.5 + (layer / 100.0), 0.25], dtype=torch.float32)
             return torch.tensor([0.35, 2.2 + (layer / 100.0)], dtype=torch.float32)
 
+        def fake_score_answer_token_sequence(
+            _bundle: object,
+            prompt_inputs: str,
+            *,
+            answer_token_ids: tuple[int, ...] | list[int],
+            layer: int | None = None,
+            donor_final_token_activation: torch.Tensor | None = None,
+        ) -> SequenceScore:
+            del donor_final_token_activation
+            token_ids = tuple(int(token_id) for token_id in answer_token_ids)
+            token_strs = tuple(f"tok-{token_id}" for token_id in token_ids)
+            base = -0.2 * len(token_ids)
+            if prompt_inputs == "pressure prompt":
+                gold_bonus = 0.4 if layer is not None else 0.0
+                shortcut_bonus = 0.6 if layer is None else -0.2
+            else:
+                gold_bonus = 0.6 if layer is None else -0.2
+                shortcut_bonus = 0.1 if layer is None else 0.5
+            bonus = gold_bonus if token_ids[0] in {0, 12} else shortcut_bonus
+            mean = base + bonus
+            return SequenceScore(
+                token_ids=token_ids,
+                token_strs=token_strs,
+                logprob_sum=mean * len(token_ids),
+                logprob_mean=mean,
+            )
+
         with tempfile.TemporaryDirectory() as tempdir:
             temp_root = Path(tempdir)
             config = build_route_patching_config(
@@ -169,6 +198,10 @@ class RunReasoningRoutePatchingTestCase(unittest.TestCase):
                     "pressuretrace.patching.run_reasoning_route_patching.patch_final_token_activation",
                     side_effect=fake_patch_final_token_activation,
                 ),
+                patch(
+                    "pressuretrace.patching.run_reasoning_route_patching.score_answer_token_sequence",
+                    side_effect=fake_score_answer_token_sequence,
+                ),
             ):
                 artifacts = run_reasoning_route_patching(config)
 
@@ -181,16 +214,21 @@ class RunReasoningRoutePatchingTestCase(unittest.TestCase):
             self.assertTrue(artifacts.induction_delta_shortcut_prob_plot_path.exists())
 
         self.assertEqual(artifacts.total_pairs_loaded, 2)
-        self.assertEqual(artifacts.retained_pairs, 1)
-        self.assertEqual(artifacts.skipped_tokenization, 1)
-        self.assertEqual(artifacts.rows_written, 6)
+        self.assertEqual(artifacts.retained_pairs, 2)
+        self.assertEqual(artifacts.skipped_tokenization, 0)
+        self.assertEqual(artifacts.rows_written, 12)
         self.assertEqual(artifacts.summary_txt_path, config.summary_txt_path)
         self.assertEqual(artifacts.summary_csv_path, config.summary_csv_path)
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 12)
         self.assertEqual({row["direction"] for row in rows}, {"rescue", "induction"})
         self.assertEqual({row["layer"] for row in rows}, {-10, -8, -6})
-        self.assertTrue(all(row["pressure_type"] == "teacher_anchor" for row in rows))
+        self.assertEqual(
+            {row["pressure_type"] for row in rows},
+            {"teacher_anchor", "neutral_wrong_answer_cue"},
+        )
         self.assertTrue(all("delta_gold_prob" in row for row in rows))
+        self.assertTrue(all("answer_scoring_mode" in row for row in rows))
+        self.assertTrue(any(len(row["gold_token_ids"]) > 1 for row in rows))
 
 
 if __name__ == "__main__":

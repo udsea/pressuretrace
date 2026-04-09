@@ -6,10 +6,13 @@ from dataclasses import asdict
 from pressuretrace.patching.reasoning_patching_metrics import (
     AnswerTokenPair,
     PatchSummaryRow,
+    SequenceScore,
     TokenSnapshot,
     aggregate_patch_rows,
     build_answer_token_pair,
+    build_answer_token_sequence,
     build_patch_comparison_row,
+    compute_sequence_snapshot,
     compute_token_snapshot,
     patch_summary_to_csv_text,
     render_summary_text,
@@ -63,6 +66,15 @@ class ReasoningPatchingMetricsTestCase(unittest.TestCase):
                 shortcut_answer="96",
             )
         )
+        sequence = build_answer_token_sequence(
+            tokenizer,
+            gold_answer="multi token",
+            shortcut_answer="96",
+        )
+        self.assertIsNotNone(sequence)
+        assert sequence is not None
+        self.assertEqual(sequence.gold_token_ids, (1, 2))
+        self.assertEqual(sequence.shortcut_token_ids, (96,))
 
     def test_compute_token_snapshot_uses_softmax_and_top1(self) -> None:
         tokenizer = DummyTokenizer()
@@ -81,13 +93,78 @@ class ReasoningPatchingMetricsTestCase(unittest.TestCase):
             -1.0,
             places=6,
         )
+        self.assertEqual(snapshot.preferred_answer, "shortcut")
+
+    def test_compute_sequence_snapshot_uses_mean_logprob_and_pairwise_softmax(self) -> None:
+        tokenizer = DummyTokenizer()
+        snapshot = compute_sequence_snapshot(
+            gold_score=SequenceScore(
+                token_ids=(125, 126),
+                token_strs=("tok_125", "tok_126"),
+                logprob_sum=-1.2,
+                logprob_mean=-0.6,
+            ),
+            shortcut_score=SequenceScore(
+                token_ids=(96,),
+                token_strs=("tok_96",),
+                logprob_sum=-1.0,
+                logprob_mean=-1.0,
+            ),
+            next_token_logits=[0.5, 1.5, 0.1],
+            tokenizer=tokenizer,
+        )
+
+        self.assertAlmostEqual(snapshot.gold_logit, -0.6)
+        self.assertAlmostEqual(snapshot.shortcut_logit, -1.0)
+        self.assertTrue(snapshot.gold_prob > snapshot.shortcut_prob)
+        self.assertEqual(snapshot.preferred_answer, "gold")
+        self.assertEqual(snapshot.top1_token_id, 1)
 
     def test_build_patch_comparison_row_uses_directional_baseline(self) -> None:
-        gold = TokenSnapshot(1.0, 0.5, 0.6, 0.4, 0.5, 1, "tok_1")
-        pressure = TokenSnapshot(0.8, 0.7, 0.55, 0.35, 0.1, 2, "tok_2")
-        patched = TokenSnapshot(1.2, 0.2, 0.7, 0.2, 1.0, 3, "tok_3")
+        gold = TokenSnapshot(
+            gold_logit=1.0,
+            shortcut_logit=0.5,
+            gold_prob=0.6,
+            shortcut_prob=0.4,
+            gold_minus_shortcut_margin=0.5,
+            gold_sequence_logprob_sum=-1.0,
+            shortcut_sequence_logprob_sum=-2.0,
+            gold_sequence_logprob_mean=-0.5,
+            shortcut_sequence_logprob_mean=-1.0,
+            preferred_answer="gold",
+            top1_token_id=1,
+            top1_token_str="tok_1",
+        )
+        pressure = TokenSnapshot(
+            gold_logit=0.8,
+            shortcut_logit=0.7,
+            gold_prob=0.55,
+            shortcut_prob=0.35,
+            gold_minus_shortcut_margin=0.1,
+            gold_sequence_logprob_sum=-1.8,
+            shortcut_sequence_logprob_sum=-1.9,
+            gold_sequence_logprob_mean=-0.9,
+            shortcut_sequence_logprob_mean=-0.95,
+            preferred_answer="gold",
+            top1_token_id=2,
+            top1_token_str="tok_2",
+        )
+        patched = TokenSnapshot(
+            gold_logit=1.2,
+            shortcut_logit=0.2,
+            gold_prob=0.7,
+            shortcut_prob=0.2,
+            gold_minus_shortcut_margin=1.0,
+            gold_sequence_logprob_sum=-0.8,
+            shortcut_sequence_logprob_sum=-2.6,
+            gold_sequence_logprob_mean=-0.4,
+            shortcut_sequence_logprob_mean=-1.3,
+            preferred_answer="gold",
+            top1_token_id=3,
+            top1_token_str="tok_3",
+        )
         tokenizer = DummyTokenizer()
-        pair = build_answer_token_pair(tokenizer, gold_answer="125", shortcut_answer="96")
+        pair = build_answer_token_sequence(tokenizer, gold_answer="125", shortcut_answer="96")
         assert pair is not None
 
         rescue_row = build_patch_comparison_row(
@@ -111,6 +188,9 @@ class ReasoningPatchingMetricsTestCase(unittest.TestCase):
         self.assertAlmostEqual(rescue_row.delta_shortcut_prob, -0.15)
         self.assertAlmostEqual(rescue_row.delta_margin, 0.9)
         self.assertTrue(rescue_row.top1_changed)
+        self.assertEqual(rescue_row.answer_scoring_mode, "sequence_mean_logprob_pair_softmax")
+        self.assertEqual(rescue_row.gold_token_ids, [125])
+        self.assertEqual(rescue_row.shortcut_token_ids, [96])
 
         induction_row = build_patch_comparison_row(
             base_task_id="base_1",

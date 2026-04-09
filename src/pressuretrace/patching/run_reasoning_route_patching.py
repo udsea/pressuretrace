@@ -23,22 +23,23 @@ from pressuretrace.patching.reasoning_patching_core import (
     get_prompt_hidden_states,
     load_model_and_tokenizer,
     patch_final_token_activation,
+    score_answer_token_sequence,
 )
 from pressuretrace.patching.reasoning_patching_metrics import (
     FIRST_PASS_LAYERS,
     FIRST_PASS_PRESSURE_TYPES,
-    AnswerTokenPair,
+    AnswerTokenSequence,
     aggregate_patch_rows,
-    build_answer_token_pair,
+    build_answer_token_sequence,
     build_patch_comparison_row,
-    compute_token_snapshot,
+    compute_sequence_snapshot,
     highlight_summary_rows,
     patch_row_to_dict,
     plot_patch_summary,
     render_summary_text,
     write_summary_csv,
 )
-from pressuretrace.utils.io import append_jsonl, ensure_directory, prepare_results_file
+from pressuretrace.utils.io import append_jsonl, ensure_directory, prepare_results_file, read_jsonl
 
 RESULTS_FILENAME = "reasoning_route_patching_qwen-qwen3-14b_off.jsonl"
 SUMMARY_TXT_FILENAME = "reasoning_route_patching_summary_qwen-qwen3-14b_off.txt"
@@ -109,10 +110,10 @@ class RoutePatchingArtifacts:
 
 @dataclass(frozen=True)
 class EligiblePatchPair:
-    """Matched control/pressure pair that survives single-token filtering."""
+    """Matched control/pressure pair that survives answer-tokenization filtering."""
 
     pair: ReasoningPatchPair
-    answer_tokens: AnswerTokenPair
+    answer_tokens: AnswerTokenSequence
 
 
 def resolve_route_patching_paths(frozen_root: Path | None = None) -> RoutePatchingPaths:
@@ -159,10 +160,26 @@ def build_route_patching_config(
     """Build a route-patching config from explicit overrides."""
 
     defaults = resolve_route_patching_paths(frozen_root)
+    resolved_results_path = results_path or defaults.results_path
+    inferred_model_name = _infer_model_name_from_results(resolved_results_path)
+    if (
+        inferred_model_name is not None
+        and model_name != REASONING_V2_MODEL_NAME
+        and model_name != inferred_model_name
+    ):
+        raise ValueError(
+            f"Requested model_name='{model_name}' does not match "
+            f"results artifact model_name='{inferred_model_name}'."
+        )
+    resolved_model_name = (
+        inferred_model_name
+        if model_name == REASONING_V2_MODEL_NAME and inferred_model_name is not None
+        else model_name
+    )
     return RoutePatchingConfig(
         frozen_root=defaults.frozen_root,
         manifest_path=manifest_path or defaults.manifest_path,
-        results_path=results_path or defaults.results_path,
+        results_path=resolved_results_path,
         patch_pairs_path=patch_pairs_path or defaults.patch_pairs_path,
         output_path=output_path or defaults.output_path,
         summary_txt_path=summary_txt_path or defaults.summary_txt_path,
@@ -177,7 +194,7 @@ def build_route_patching_config(
             induction_delta_shortcut_prob_plot_path
             or defaults.induction_delta_shortcut_prob_plot_path
         ),
-        model_name=model_name,
+        model_name=resolved_model_name,
         thinking_mode=thinking_mode,
         layers=layers,
         pressure_types=pressure_types,
@@ -212,6 +229,21 @@ def _format_counter(counter: Counter[str], order: Sequence[str]) -> str:
     return ", ".join(f"{key}={counter.get(key, 0)}" for key in order)
 
 
+def _infer_model_name_from_results(results_path: Path) -> str | None:
+    """Infer the unique model name recorded in a paper-slice results artifact."""
+
+    if not results_path.exists():
+        return None
+    model_names = {
+        str(row.get("model_name", "")).strip()
+        for row in read_jsonl(results_path)
+        if str(row.get("model_name", "")).strip()
+    }
+    if len(model_names) != 1:
+        return None
+    return next(iter(model_names))
+
+
 def _summarize_model_devices(model: Any) -> str:
     """Render a compact summary of where the model layers live."""
 
@@ -232,12 +264,12 @@ def select_eligible_patch_pairs(
     pairs: Sequence[ReasoningPatchPair],
     tokenizer: Any,
 ) -> tuple[list[EligiblePatchPair], int]:
-    """Keep only pairs whose gold and shortcut answers are single-token strings."""
+    """Keep only pairs whose gold and shortcut answers tokenize to non-empty sequences."""
 
     retained: list[EligiblePatchPair] = []
     skipped = 0
     for pair in pairs:
-        answer_tokens = build_answer_token_pair(
+        answer_tokens = build_answer_token_sequence(
             tokenizer,
             gold_answer=pair.gold_answer,
             shortcut_answer=pair.shortcut_answer,
@@ -253,7 +285,7 @@ def _build_baseline_snapshots(
     bundle: ReasoningPatchingBundle,
     eligible_pair: EligiblePatchPair,
 ) -> tuple[Any, Any, Any, Any, Any, Any]:
-    """Run baseline forwards for one matched control/pressure pair."""
+    """Run baseline forwards and sequence-aware scoring for one matched pair."""
 
     control_inputs, control_outputs = get_prompt_hidden_states(
         bundle,
@@ -264,16 +296,32 @@ def _build_baseline_snapshots(
         eligible_pair.pair.pressure_prompt,
     )
     answer_tokens = eligible_pair.answer_tokens
-    control_snapshot = compute_token_snapshot(
-        get_next_token_logits_from_outputs(control_outputs),
-        gold_token_id=answer_tokens.gold_token_id,
-        shortcut_token_id=answer_tokens.shortcut_token_id,
+    control_snapshot = compute_sequence_snapshot(
+        gold_score=score_answer_token_sequence(
+            bundle,
+            control_inputs,
+            answer_token_ids=answer_tokens.gold_token_ids,
+        ),
+        shortcut_score=score_answer_token_sequence(
+            bundle,
+            control_inputs,
+            answer_token_ids=answer_tokens.shortcut_token_ids,
+        ),
+        next_token_logits=get_next_token_logits_from_outputs(control_outputs),
         tokenizer=bundle.tokenizer,
     )
-    pressure_snapshot = compute_token_snapshot(
-        get_next_token_logits_from_outputs(pressure_outputs),
-        gold_token_id=answer_tokens.gold_token_id,
-        shortcut_token_id=answer_tokens.shortcut_token_id,
+    pressure_snapshot = compute_sequence_snapshot(
+        gold_score=score_answer_token_sequence(
+            bundle,
+            pressure_inputs,
+            answer_token_ids=answer_tokens.gold_token_ids,
+        ),
+        shortcut_score=score_answer_token_sequence(
+            bundle,
+            pressure_inputs,
+            answer_token_ids=answer_tokens.shortcut_token_ids,
+        ),
+        next_token_logits=get_next_token_logits_from_outputs(pressure_outputs),
         tokenizer=bundle.tokenizer,
     )
     return (
@@ -333,16 +381,40 @@ def _run_pair_layer_patches(
             donor_final_token_activation=pressure_activation,
         )
 
-        rescue_snapshot = compute_token_snapshot(
-            rescue_logits,
-            gold_token_id=answer_tokens.gold_token_id,
-            shortcut_token_id=answer_tokens.shortcut_token_id,
+        rescue_snapshot = compute_sequence_snapshot(
+            gold_score=score_answer_token_sequence(
+                bundle,
+                pressure_inputs,
+                answer_token_ids=answer_tokens.gold_token_ids,
+                layer=layer,
+                donor_final_token_activation=control_activation,
+            ),
+            shortcut_score=score_answer_token_sequence(
+                bundle,
+                pressure_inputs,
+                answer_token_ids=answer_tokens.shortcut_token_ids,
+                layer=layer,
+                donor_final_token_activation=control_activation,
+            ),
+            next_token_logits=rescue_logits,
             tokenizer=bundle.tokenizer,
         )
-        induction_snapshot = compute_token_snapshot(
-            induction_logits,
-            gold_token_id=answer_tokens.gold_token_id,
-            shortcut_token_id=answer_tokens.shortcut_token_id,
+        induction_snapshot = compute_sequence_snapshot(
+            gold_score=score_answer_token_sequence(
+                bundle,
+                control_inputs,
+                answer_token_ids=answer_tokens.gold_token_ids,
+                layer=layer,
+                donor_final_token_activation=pressure_activation,
+            ),
+            shortcut_score=score_answer_token_sequence(
+                bundle,
+                control_inputs,
+                answer_token_ids=answer_tokens.shortcut_token_ids,
+                layer=layer,
+                donor_final_token_activation=pressure_activation,
+            ),
+            next_token_logits=induction_logits,
             tokenizer=bundle.tokenizer,
         )
 
@@ -417,17 +489,18 @@ def _write_summary_text(
                 f"Model: {config.model_name}",
                 f"Thinking mode: {config.thinking_mode}",
                 (
-                    "First-pass design: prompt-only logit-level patching over the final "
-                    "prompt token; rescue and induction directions; no generation."
+                    "Design: prompt-only activation patching over the final prompt token; "
+                    "rescue and induction directions; sequence-aware answer scoring; "
+                    "no generation."
                 ),
                 (
                     "Filters: pressure_type in "
                     f"{tuple(config.pressure_types)}; control=robust_correct; "
                     "pressure=shortcut_followed; gold and shortcut answers must each "
-                    "tokenize to exactly one token."
+                    "tokenize to at least one token."
                 ),
                 f"Pairs loaded: {total_pairs_loaded}",
-                f"Retained single-token pairs: {retained_pairs}",
+                f"Retained answer-sequence pairs: {retained_pairs}",
                 f"Skipped for tokenization: {skipped_tokenization}",
                 f"Rows written: {rows_written}",
                 "",
@@ -466,6 +539,7 @@ def run_reasoning_route_patching(config: RoutePatchingConfig) -> RoutePatchingAr
     print("Per-pressure counts: " + _format_counter(pressure_counts, config.pressure_types))
     print(f"Skipped for tokenization: {skipped_tokenization}")
     print("Layers tested: " + ", ".join(str(layer) for layer in config.layers))
+    print("Answer scoring: sequence_mean_logprob_pair_softmax")
     print("Model device placement: " + _summarize_model_devices(bundle.model))
 
     prepare_results_file(config.output_path)

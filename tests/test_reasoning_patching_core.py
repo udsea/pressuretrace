@@ -11,6 +11,7 @@ from pressuretrace.behavior.reasoning_runtime import ReasoningGenerationProfile
 from pressuretrace.patching.reasoning_patching_core import (
     PromptInputs,
     ReasoningPatchingBundle,
+    build_continuation_inputs,
     build_model_inputs,
     ensure_single_token_answer,
     extract_final_token_activation,
@@ -18,6 +19,7 @@ from pressuretrace.patching.reasoning_patching_core import (
     load_model_and_tokenizer,
     patch_final_token_activation,
     resolve_decoder_layer_module,
+    score_answer_token_sequence,
 )
 
 
@@ -212,6 +214,21 @@ class ReasoningPatchingCoreTestCase(unittest.TestCase):
 
         self.assertEqual(baseline_logits.shape, patched_logits.shape)
         self.assertFalse(torch.allclose(baseline_logits, patched_logits))
+
+    def test_build_continuation_inputs_and_score_answer_sequence(self) -> None:
+        bundle = _bundle()
+        prompt_inputs = build_model_inputs(bundle, "Question: 1+1?")
+
+        continuation_inputs = build_continuation_inputs(prompt_inputs, [4, 5])
+        score = score_answer_token_sequence(bundle, prompt_inputs, answer_token_ids=[4, 5])
+
+        self.assertEqual(int(continuation_inputs.input_ids.shape[-1]), 6)
+        self.assertEqual(
+            continuation_inputs.final_prompt_token_index,
+            prompt_inputs.final_token_index,
+        )
+        self.assertEqual(score.token_ids, (4, 5))
+        self.assertEqual(len(score.token_strs), 2)
 
     def test_resolve_decoder_layer_module_supports_negative_indexing(self) -> None:
         model = _DummyModel()

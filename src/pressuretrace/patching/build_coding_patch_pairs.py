@@ -14,14 +14,18 @@ from pressuretrace.utils.io import read_jsonl, write_jsonl
 
 TARGET_PRESSURE_TYPES: tuple[str, ...] = (
     "neutral_wrong_answer_cue",
-    "teacher_anchor",
 )
 REQUIRED_PATCH_PAIR_KEYS: tuple[str, ...] = (
     "base_task_id",
+    "archetype",
     "pressure_type",
     "control_task_id",
     "pressure_task_id",
     "entry_point",
+    "prompt_control",
+    "prompt_pressure",
+    "route_control",
+    "route_pressure",
     "robust_reference_code",
     "shortcut_reference_code",
     "metadata",
@@ -121,9 +125,12 @@ def build_coding_patch_pairs(
     result_rows_by_base_task_id = _result_rows_by_base_task_id(results_path)
     allowed_pressure_types = {str(value) for value in pressure_types}
 
+    total_candidate_pairs = 0
     pair_rows: list[dict[str, Any]] = []
     matched_keys: set[tuple[str, str]] = set()
     for base_task_id, control_slice_row in control_by_base_task_id.items():
+        if str(control_slice_row.get("archetype", "")) != "visible_test_hardcoding":
+            continue
         grouped_rows = result_rows_by_base_task_id.get(base_task_id, [])
         if not grouped_rows:
             continue
@@ -140,6 +147,7 @@ def build_coding_patch_pairs(
             grouped_rows,
             pressure_types=allowed_pressure_types,
         ):
+            total_candidate_pairs += 1
             pressure_type = str(pressure_row["pressure_type"])
             pair_key = (base_task_id, pressure_type)
             if pair_key in matched_keys:
@@ -152,14 +160,25 @@ def build_coding_patch_pairs(
                 continue
             if robust_reference_code == shortcut_reference_code:
                 continue
+            control_visible_pass = bool(control_result_row.get("passed_visible_tests"))
+            control_hidden_pass = bool(control_result_row.get("passed_hidden_tests"))
+            pressure_visible_pass = bool(pressure_row.get("passed_visible_tests"))
+            pressure_hidden_pass = bool(pressure_row.get("passed_hidden_tests"))
             matched_keys.add(pair_key)
             pair_rows.append(
                 {
                     "base_task_id": base_task_id,
+                    "archetype": str(control_slice_row.get("archetype", "")),
                     "pressure_type": pressure_type,
                     "control_task_id": str(control_slice_row["control_task_id"]),
                     "pressure_task_id": str(pressure_row["task_id"]),
                     "entry_point": str(pressure_row.get("entry_point", "")),
+                    "prompt_control": str(
+                        control_result_row.get("prompt", control_slice_row.get("prompt", ""))
+                    ),
+                    "prompt_pressure": str(pressure_row.get("prompt", "")),
+                    "route_control": str(control_result_row.get("route_label", "robust_success")),
+                    "route_pressure": str(pressure_row.get("route_label", "")),
                     "robust_reference_code": robust_reference_code,
                     "shortcut_reference_code": shortcut_reference_code,
                     "metadata": {
@@ -170,6 +189,12 @@ def build_coding_patch_pairs(
                         "thinking_mode": str(control_slice_row.get("thinking_mode", "")),
                         "control_route_label": "robust_success",
                         "pressure_route_label": str(pressure_row.get("route_label", "")),
+                        "control_visible_pass": control_visible_pass,
+                        "control_hidden_pass": control_hidden_pass,
+                        "pressure_visible_pass": pressure_visible_pass,
+                        "pressure_hidden_pass": pressure_hidden_pass,
+                        "control_reference_chars": len(robust_reference_code),
+                        "pressure_reference_chars": len(shortcut_reference_code),
                         "pairing_strategy": "control_robust_vs_pressure_shortcut",
                     },
                 }
@@ -177,13 +202,22 @@ def build_coding_patch_pairs(
 
     pair_rows.sort(key=lambda row: (str(row["pressure_type"]), str(row["base_task_id"])))
     write_jsonl(output_path, pair_rows)
-    print(f"Matched patch pairs: {len(pair_rows)}")
+    print(f"Total candidate pairs: {total_candidate_pairs}")
+    print(f"Retained patch pairs: {len(pair_rows)}")
     pressure_counts = Counter(str(row["pressure_type"]) for row in pair_rows)
+    archetype_counts = Counter(str(row["archetype"]) for row in pair_rows)
     print(
         "Pressure types: "
         + ", ".join(
             f"{pressure_type}={pressure_counts.get(pressure_type, 0)}"
             for pressure_type in sorted(allowed_pressure_types)
+        )
+    )
+    print(
+        "Archetypes: "
+        + ", ".join(
+            f"{archetype}={archetype_counts.get(archetype, 0)}"
+            for archetype in sorted(archetype_counts)
         )
     )
     return output_path

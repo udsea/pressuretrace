@@ -31,7 +31,7 @@ PATCH_PAIRS_PATH="$FROZEN_ROOT/results/coding_patch_pairs_qwen-qwen3-14b_off.jso
 echo "Frozen root: $FROZEN_ROOT"
 echo "Patch pairs: $PATCH_PAIRS_PATH"
 
-uv run python -m pressuretrace.patching.build_coding_patch_pairs \
+uv run pressuretrace coding-patch-pairs-v1 \
   --results-path "$FROZEN_ROOT/results/coding_paper_slice_qwen-qwen3-14b_off.jsonl" \
   --control-slice-path "$FROZEN_ROOT/data/splits/coding_control_robust_slice_qwen-qwen3-14b_off.jsonl" \
   --output-path "$PATCH_PAIRS_PATH"

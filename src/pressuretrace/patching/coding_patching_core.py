@@ -1,4 +1,4 @@
-"""Core prompt-only activation patching helpers for coding route patching."""
+"""Core prompt and generation-time activation patching helpers for coding."""
 
 from __future__ import annotations
 
@@ -51,6 +51,47 @@ class ContinuationInputs:
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     final_prompt_token_index: int
+
+
+@dataclass(frozen=True)
+class GenerationStepTrace:
+    """One greedy generation step with its aligned decoder activation."""
+
+    step_index: int
+    token_id: int
+    token_str: str
+    top1_token_id: int
+    top1_token_str: str
+    activation: torch.Tensor
+
+
+@dataclass(frozen=True)
+class GenerationTrace:
+    """Greedy generation trace with one cached activation snapshot per step."""
+
+    generated_token_ids: tuple[int, ...]
+    generated_text: str
+    step_traces: tuple[GenerationStepTrace, ...]
+
+
+@dataclass(frozen=True)
+class StepPatchDiagnostic:
+    """Per-step token diagnostic for one patched generation step."""
+
+    generation_step: int
+    baseline_top1_token_id: int
+    baseline_top1_token_str: str
+    patched_top1_token_id: int
+    patched_top1_token_str: str
+
+
+@dataclass(frozen=True)
+class GenerationPatchResult:
+    """One greedy generation run with optional early-step activation patches."""
+
+    generated_token_ids: tuple[int, ...]
+    generated_text: str
+    step_diagnostics: tuple[StepPatchDiagnostic, ...]
 
 
 def load_model_and_tokenizer(
@@ -263,6 +304,16 @@ def final_token_activation_for_layer(
     return hidden_state[0, prompt_inputs.final_token_index, :].detach()
 
 
+def _activation_for_context_step(outputs: Any, *, model: Any, layer: int) -> torch.Tensor:
+    """Return the final-context-token activation for one forward pass."""
+
+    if outputs.hidden_states is None:
+        raise ValueError("Model forward pass did not return hidden states.")
+    resolved_layer = resolve_layer_index(model, layer)
+    hidden_state = outputs.hidden_states[resolved_layer + 1]
+    return hidden_state[0, -1, :].detach()
+
+
 def build_continuation_inputs(
     prompt_inputs: PromptInputs,
     continuation_token_ids: Sequence[int],
@@ -284,6 +335,204 @@ def build_continuation_inputs(
     )
 
 
+def resolve_generation_step_window(
+    window: int | Sequence[int] | str,
+) -> tuple[int, ...]:
+    """Resolve a coding-generation patch window into zero-based step indices.
+
+    Supported labels are intentionally simple and coding-native:
+    - ``gen_1`` patches step 0 only
+    - ``gen_1_3`` patches steps 0, 1, 2
+    - ``gen_1_5`` patches steps 0, 1, 2, 3, 4
+    """
+
+    if isinstance(window, int):
+        if window <= 0:
+            raise ValueError("Generation window size must be positive.")
+        return tuple(range(window))
+
+    if isinstance(window, str):
+        normalized = window.strip().lower().replace("-", "_")
+        aliases = {
+            "gen_1": (0,),
+            "gen_1_3": (0, 1, 2),
+            "gen_1_5": (0, 1, 2, 3, 4),
+        }
+        if normalized in aliases:
+            return aliases[normalized]
+        if normalized.startswith("gen_"):
+            suffix = normalized.removeprefix("gen_")
+            parts = [part for part in suffix.split("_") if part]
+            if not parts:
+                raise ValueError(f"Unsupported generation window label: {window!r}")
+            try:
+                upper_bound = int(parts[-1])
+            except ValueError as exc:  # pragma: no cover - defensive parsing
+                raise ValueError(f"Unsupported generation window label: {window!r}") from exc
+            if upper_bound <= 0:
+                raise ValueError(f"Generation window upper bound must be positive: {window!r}")
+            return tuple(range(upper_bound))
+        raise ValueError(f"Unsupported generation window label: {window!r}")
+
+    step_indices = tuple(int(step) for step in window)
+    if not step_indices:
+        raise ValueError("Generation window must contain at least one step.")
+    if any(step < 0 for step in step_indices):
+        raise ValueError("Generation window step indices must be non-negative.")
+    return step_indices
+
+
+def generation_step_window_label(window: int | Sequence[int] | str) -> str:
+    """Return a canonical label for a generation-step patch window."""
+
+    step_indices = resolve_generation_step_window(window)
+    if step_indices == (0,):
+        return "gen_1"
+    if step_indices == (0, 1, 2):
+        return "gen_1_3"
+    if step_indices == (0, 1, 2, 3, 4):
+        return "gen_1_5"
+    return "gen_" + "_".join(str(step + 1) for step in step_indices)
+
+
+def generation_trace_activation_by_step(trace: GenerationTrace) -> dict[int, torch.Tensor]:
+    """Return the aligned decoder activations from a generation trace."""
+
+    return {step_trace.step_index: step_trace.activation for step_trace in trace.step_traces}
+
+
+def generation_trace_activation_at_step(trace: GenerationTrace, step_index: int) -> torch.Tensor:
+    """Return the cached activation for one generation step."""
+
+    for step_trace in trace.step_traces:
+        if step_trace.step_index == step_index:
+            return step_trace.activation
+    raise KeyError(f"Generation trace does not contain step {step_index}.")
+
+
+def _append_token(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    token_id: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Append one generated token to the current autoregressive context."""
+
+    token = torch.tensor(
+        [[int(token_id)]],
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    token_mask = torch.ones_like(token, dtype=attention_mask.dtype)
+    return (
+        torch.cat([input_ids, token], dim=-1),
+        torch.cat([attention_mask, token_mask], dim=-1),
+    )
+
+
+def _eos_token_ids(bundle: CodingPatchingBundle) -> set[int]:
+    """Return the tokenizer eos ids as a stable integer set."""
+
+    raw_eos = getattr(bundle.tokenizer, "eos_token_id", None)
+    if raw_eos is None:
+        return set()
+    if isinstance(raw_eos, Sequence) and not isinstance(raw_eos, (str, bytes)):
+        return {int(token_id) for token_id in raw_eos}
+    return {int(raw_eos)}
+
+
+def decode_generated_tokens(
+    bundle: CodingPatchingBundle,
+    token_ids: Sequence[int],
+) -> str:
+    """Decode generated token ids into the coding completion text."""
+
+    return str(
+        bundle.tokenizer.decode(
+            list(int(token_id) for token_id in token_ids),
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+    )
+    ).strip()
+
+
+def capture_greedy_generation_trace(
+    bundle: CodingPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    layer: int,
+    max_new_tokens: int,
+) -> GenerationTrace:
+    """Greedily generate and cache donor activations aligned by generation step.
+
+    Step index 0 corresponds to the prompt-to-generation boundary, i.e. the final
+    prompt token used to predict the first generated code token.
+    """
+
+    if max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be positive.")
+
+    input_ids = prompt_inputs.input_ids
+    attention_mask = prompt_inputs.attention_mask
+    eos_token_ids = _eos_token_ids(bundle)
+    generated_token_ids: list[int] = []
+    step_traces: list[GenerationStepTrace] = []
+
+    for generation_step in range(max_new_tokens):
+        outputs = _forward_inputs(
+            bundle,
+            input_ids,
+            attention_mask,
+            output_hidden_states=True,
+        )
+        logits = outputs.logits[0, -1, :]
+        next_token_id = int(torch.argmax(logits).item())
+        activation = _activation_for_context_step(outputs, model=bundle.model, layer=layer)
+        generated_token_ids.append(next_token_id)
+        step_traces.append(
+            GenerationStepTrace(
+                step_index=generation_step,
+                token_id=next_token_id,
+                token_str=token_id_to_string(bundle.tokenizer, next_token_id),
+                top1_token_id=next_token_id,
+                top1_token_str=token_id_to_string(bundle.tokenizer, next_token_id),
+                activation=activation.cpu(),
+            )
+        )
+        input_ids, attention_mask = _append_token(input_ids, attention_mask, next_token_id)
+        if next_token_id in eos_token_ids:
+            break
+
+    return GenerationTrace(
+        generated_token_ids=tuple(generated_token_ids),
+        generated_text=decode_generated_tokens(bundle, generated_token_ids),
+        step_traces=tuple(step_traces),
+    )
+
+
+def teacher_forced_last_token_activation(
+    bundle: CodingPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    continuation_token_ids: Sequence[int],
+    layer: int,
+) -> torch.Tensor:
+    """Return the hidden state of the final teacher-forced continuation token."""
+
+    continuation_inputs = build_continuation_inputs(prompt_inputs, continuation_token_ids)
+    outputs = _forward_inputs(
+        bundle,
+        continuation_inputs.input_ids,
+        continuation_inputs.attention_mask,
+        output_hidden_states=True,
+    )
+    if outputs.hidden_states is None:
+        raise ValueError("Model forward pass did not return hidden states.")
+    resolved_layer = resolve_layer_index(bundle.model, layer)
+    hidden_state = outputs.hidden_states[resolved_layer + 1]
+    final_index = int(continuation_inputs.attention_mask[0].sum().item()) - 1
+    return hidden_state[0, final_index, :].detach()
+
+
 def _patch_forward_outputs(
     bundle: CodingPatchingBundle,
     *,
@@ -293,7 +542,7 @@ def _patch_forward_outputs(
     layer: int,
     donor_final_token_activation: torch.Tensor,
 ) -> Any:
-    """Run a forward pass while replacing one final-prompt-token activation."""
+    """Run a forward pass while replacing one token activation at a chosen index."""
 
     resolved_layer = resolve_layer_index(bundle.model, layer)
     target_module = resolve_decoder_layer_module(bundle.model, resolved_layer)
@@ -423,4 +672,131 @@ def score_continuation_sequence(
         token_strs=token_strs,
         logprob_sum=float(gathered_logprobs.sum().item()),
         logprob_mean=float(gathered_logprobs.mean().item()),
+    )
+
+
+def greedy_generate_with_step_window_patch(
+    bundle: CodingPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    layer: int,
+    donor_activations_by_step: dict[int, torch.Tensor],
+    max_new_tokens: int,
+) -> GenerationPatchResult:
+    """Greedily generate a completion, patching one or more aligned steps.
+
+    Step index 0 corresponds to the prompt-to-generation boundary. Later indices
+    correspond to the first, second, third, ... generated code tokens.
+    """
+
+    if not donor_activations_by_step:
+        raise ValueError("At least one patch step is required.")
+    if any(step < 0 for step in donor_activations_by_step):
+        raise ValueError("Patch steps must be non-negative.")
+
+    input_ids = prompt_inputs.input_ids
+    attention_mask = prompt_inputs.attention_mask
+    eos_token_ids = _eos_token_ids(bundle)
+    generated_token_ids: list[int] = []
+    step_diagnostics: list[StepPatchDiagnostic] = []
+
+    for generation_step in range(max_new_tokens):
+        outputs = _forward_inputs(
+            bundle,
+            input_ids,
+            attention_mask,
+            output_hidden_states=False,
+        )
+        baseline_logits = outputs.logits[0, -1, :]
+        next_token_logits = baseline_logits
+
+        if generation_step in donor_activations_by_step:
+            patched_outputs = _patch_forward_outputs(
+                bundle,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                final_token_index=int(attention_mask[0].sum().item()) - 1,
+                layer=layer,
+                donor_final_token_activation=donor_activations_by_step[generation_step],
+            )
+            next_token_logits = patched_outputs.logits[0, -1, :]
+            baseline_top1_token_id = int(torch.argmax(baseline_logits).item())
+            patched_top1_token_id = int(torch.argmax(next_token_logits).item())
+            step_diagnostics.append(
+                StepPatchDiagnostic(
+                    generation_step=generation_step,
+                    baseline_top1_token_id=baseline_top1_token_id,
+                    baseline_top1_token_str=token_id_to_string(
+                        bundle.tokenizer,
+                        baseline_top1_token_id,
+                    ),
+                    patched_top1_token_id=patched_top1_token_id,
+                    patched_top1_token_str=token_id_to_string(
+                        bundle.tokenizer,
+                        patched_top1_token_id,
+                    ),
+                )
+            )
+
+        next_token_id = int(torch.argmax(next_token_logits).item())
+        generated_token_ids.append(next_token_id)
+        input_ids, attention_mask = _append_token(input_ids, attention_mask, next_token_id)
+        if next_token_id in eos_token_ids:
+            break
+
+    return GenerationPatchResult(
+        generated_token_ids=tuple(generated_token_ids),
+        generated_text=decode_generated_tokens(bundle, generated_token_ids),
+        step_diagnostics=tuple(step_diagnostics),
+    )
+
+
+def greedy_generate_with_generation_window_patch(
+    bundle: CodingPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    layer: int,
+    patch_window: int | Sequence[int] | str,
+    donor_trace: GenerationTrace,
+    max_new_tokens: int,
+) -> GenerationPatchResult:
+    """Greedily generate with a named or explicit early-generation patch window."""
+
+    patch_steps = resolve_generation_step_window(patch_window)
+    donor_activations_by_step = generation_trace_activation_by_step(donor_trace)
+    missing_steps = [step for step in patch_steps if step not in donor_activations_by_step]
+    if missing_steps:
+        raise ValueError(
+            "Donor trace does not contain all requested generation steps: "
+            f"{missing_steps}."
+        )
+    return greedy_generate_with_step_window_patch(
+        bundle,
+        prompt_inputs,
+        layer=layer,
+        donor_activations_by_step={
+            step: donor_activations_by_step[step]
+            for step in patch_steps
+        },
+        max_new_tokens=max_new_tokens,
+    )
+
+
+def greedy_generate_with_step_patch(
+    bundle: CodingPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    layer: int,
+    patch_step: int,
+    donor_token_activation: torch.Tensor,
+    max_new_tokens: int,
+) -> GenerationPatchResult:
+    """Backward-compatible wrapper for single-step patching."""
+
+    return greedy_generate_with_step_window_patch(
+        bundle,
+        prompt_inputs,
+        layer=layer,
+        donor_activations_by_step={patch_step: donor_token_activation},
+        max_new_tokens=max_new_tokens,
     )

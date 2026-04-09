@@ -978,7 +978,7 @@ def coding_patch_pairs_v1_command(
         help="Optional explicit coding patch-pairs JSONL path.",
     ),
     pressure_types: str = typer.Option(
-        "neutral_wrong_answer_cue,teacher_anchor",
+        "neutral_wrong_answer_cue",
         "--pressure-types",
         help="Comma-separated pressure types to retain while building pairs.",
     ),
@@ -1047,6 +1047,21 @@ def coding_route_patching_v1_command(
         "--summary-csv-path",
         help="Optional explicit coding patching summary CSV path.",
     ),
+    rescue_success_plot_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--rescue-success-plot-path",
+        help="Optional explicit rescue-success plot path.",
+    ),
+    induction_success_plot_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--induction-success-plot-path",
+        help="Optional explicit induction-success plot path.",
+    ),
+    position_window_comparison_plot_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--position-window-comparison-plot-path",
+        help="Optional explicit position-window comparison plot path.",
+    ),
     model_name: str = typer.Option(
         CODING_V1_MODEL_NAME,
         help="Model used for coding route patching.",
@@ -1066,13 +1081,23 @@ def coding_route_patching_v1_command(
         "--pressure-types",
         help="Comma-separated pressure types to retain.",
     ),
+    position_windows: str = typer.Option(
+        "gen_1,gen_1_3,gen_1_5",
+        "--position-windows",
+        help="Comma-separated early-generation patch windows.",
+    ),
+    max_new_tokens: int = typer.Option(
+        160,
+        "--max-new-tokens",
+        help="Maximum generated completion tokens per patched run.",
+    ),
     max_pairs: int | None = typer.Option(
         None,
         "--max-pairs",
         help="Optional cap on retained coding patch pairs for debugging.",
     ),
 ) -> None:
-    """Run first-pass continuation-level coding route patching on frozen pairs."""
+    """Run early-generation coding route patching on frozen pairs."""
 
     from pressuretrace.patching.run_coding_route_patching import (
         build_route_patching_config,
@@ -1087,10 +1112,17 @@ def coding_route_patching_v1_command(
         output_path=output_path,
         summary_txt_path=summary_txt_path,
         summary_csv_path=summary_csv_path,
+        rescue_success_plot_path=rescue_success_plot_path,
+        induction_success_plot_path=induction_success_plot_path,
+        position_window_comparison_plot_path=position_window_comparison_plot_path,
         model_name=model_name,
         thinking_mode=thinking_mode,
         layers=tuple(int(part.strip()) for part in layers.split(",") if part.strip()),
         pressure_types=tuple(part.strip() for part in pressure_types.split(",") if part.strip()),
+        position_windows=tuple(
+            part.strip() for part in position_windows.split(",") if part.strip()
+        ),
+        max_new_tokens=max_new_tokens,
         max_pairs=max_pairs,
     )
     artifacts = run_coding_route_patching(config)
@@ -1099,9 +1131,9 @@ def coding_route_patching_v1_command(
     console.print(f"summary_csv: [bold]{artifacts.summary_csv_path}[/bold]")
     console.print(
         "plots: "
-        f"[bold]{artifacts.rescue_delta_robust_prob_plot_path}[/bold], "
-        f"[bold]{artifacts.rescue_delta_margin_plot_path}[/bold], "
-        f"[bold]{artifacts.induction_delta_shortcut_prob_plot_path}[/bold]"
+        f"[bold]{artifacts.rescue_success_plot_path}[/bold], "
+        f"[bold]{artifacts.induction_success_plot_path}[/bold], "
+        f"[bold]{artifacts.position_window_comparison_plot_path}[/bold]"
     )
 
 

@@ -17,6 +17,9 @@ Direction: TypeAlias = Literal["rescue", "induction"]
 FIRST_PASS_LAYERS: tuple[int, ...] = (-8, -10, -6)
 FIRST_PASS_PRESSURE_TYPES: tuple[str, ...] = ("neutral_wrong_answer_cue",)
 FIRST_PASS_DIRECTIONS: tuple[Direction, ...] = ("rescue", "induction")
+EARLY_GENERATION_LAYERS: tuple[int, ...] = (-10, -8, -6)
+EARLY_GENERATION_PRESSURE_TYPES: tuple[str, ...] = ("neutral_wrong_answer_cue",)
+EARLY_GENERATION_POSITION_WINDOWS: tuple[str, ...] = ("gen_1", "gen_1_3", "gen_1_5")
 
 
 class SupportsTokenToString(Protocol):
@@ -489,6 +492,379 @@ def plot_patch_summary(
     axis.set_title(f"Coding route patching: {direction} / {metric_name}")
     axis.legend()
     axis.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
+def position_window_steps(position_window: str) -> tuple[int, ...]:
+    """Return the generation-step indices covered by a named patch window."""
+
+    if position_window == "gen_1":
+        return (0,)
+    if position_window == "gen_1_3":
+        return (0, 1, 2)
+    if position_window == "gen_1_5":
+        return (0, 1, 2, 3, 4)
+    raise ValueError(f"Unknown position_window={position_window!r}.")
+
+
+@dataclass(frozen=True)
+class CodingRoutePatchingRow:
+    """One generation-time coding patching result row."""
+
+    base_task_id: str
+    archetype: str
+    pressure_type: str
+    layer: int
+    position_window: str
+    direction: Direction
+    control_task_id: str
+    pressure_task_id: str
+    route_control: str
+    route_pressure: str
+    patched_route_label: str
+    patched_visible_pass: bool
+    patched_hidden_pass: bool
+    patched_failure_subtype: str | None
+    patched_visible_failure_names: list[str]
+    patched_hidden_failure_names: list[str]
+    rescue_success: bool
+    induction_success: bool
+    visible_pass_hidden_fail_after_patch: bool
+    patch_applied: bool
+    top1_changed: bool
+    patched_step_count: int
+    patched_completion: str
+    patched_extracted_code: str | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CodingRoutePatchingSummaryRow:
+    """Grouped summary for generation-time coding route patching."""
+
+    pressure_type: str
+    layer: int
+    position_window: str
+    direction: Direction
+    n_pairs: int
+    rescue_success_rate: float
+    induction_success_rate: float
+    robust_rate_after_patch: float
+    shortcut_rate_after_patch: float
+    visible_pass_hidden_fail_rate_after_patch: float
+    patch_applied_rate: float
+    top1_changed_rate: float
+
+
+def route_patching_row_to_dict(
+    row: CodingRoutePatchingRow | Mapping[str, Any],
+) -> dict[str, Any]:
+    """Convert a generation-time coding patching row to a plain dictionary."""
+
+    if isinstance(row, CodingRoutePatchingRow):
+        return asdict(row)
+    return dict(row)
+
+
+def aggregate_route_patching_rows(
+    rows: Iterable[CodingRoutePatchingRow | Mapping[str, Any]],
+) -> list[CodingRoutePatchingSummaryRow]:
+    """Aggregate generation-time coding patching rows into grouped summaries."""
+
+    grouped_rows: dict[tuple[str, int, str, Direction], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        row_dict = route_patching_row_to_dict(row)
+        key = (
+            str(row_dict["pressure_type"]),
+            int(row_dict["layer"]),
+            str(row_dict["position_window"]),
+            row_dict["direction"],
+        )
+        grouped_rows[key].append(row_dict)
+
+    summary_rows: list[CodingRoutePatchingSummaryRow] = []
+    for (pressure_type, layer, position_window, direction), group_rows in sorted(
+        grouped_rows.items()
+    ):
+        n_pairs = len(group_rows)
+
+        summary_rows.append(
+            CodingRoutePatchingSummaryRow(
+                pressure_type=pressure_type,
+                layer=layer,
+                position_window=position_window,
+                direction=direction,
+                n_pairs=n_pairs,
+                rescue_success_rate=sum(
+                    bool(row["rescue_success"]) for row in group_rows
+                )
+                / n_pairs,
+                induction_success_rate=sum(
+                    bool(row["induction_success"]) for row in group_rows
+                )
+                / n_pairs,
+                robust_rate_after_patch=sum(
+                    str(row["patched_route_label"]) == "robust_success"
+                    for row in group_rows
+                )
+                / n_pairs,
+                shortcut_rate_after_patch=sum(
+                    str(row["patched_route_label"]) == "shortcut_success"
+                    for row in group_rows
+                )
+                / n_pairs,
+                visible_pass_hidden_fail_rate_after_patch=sum(
+                    bool(row["visible_pass_hidden_fail_after_patch"])
+                    for row in group_rows
+                )
+                / n_pairs,
+                patch_applied_rate=sum(bool(row["patch_applied"]) for row in group_rows) / n_pairs,
+                top1_changed_rate=sum(bool(row["top1_changed"]) for row in group_rows) / n_pairs,
+            )
+        )
+    return summary_rows
+
+
+def render_route_patching_summary_text(
+    rows: Iterable[CodingRoutePatchingSummaryRow | Mapping[str, Any]],
+) -> str:
+    """Render grouped generation-time route patching summaries as TXT."""
+
+    summary_rows = [
+        asdict(row) if isinstance(row, CodingRoutePatchingSummaryRow) else dict(row)
+        for row in rows
+    ]
+    lines = [
+        "PressureTrace coding route patching summary",
+        "",
+        "Grouped by pressure_type, layer, position_window, direction.",
+        "",
+        "pressure_type | layer | position_window | direction | n_pairs | "
+        "rescue_success_rate | induction_success_rate | robust_rate_after_patch | "
+        "shortcut_rate_after_patch | visible_pass_hidden_fail_rate_after_patch | "
+        "patch_applied_rate | top1_changed_rate",
+    ]
+    for row in summary_rows:
+        lines.append(
+            " | ".join(
+                [
+                    str(row["pressure_type"]),
+                    str(row["layer"]),
+                    str(row["position_window"]),
+                    str(row["direction"]),
+                    str(row["n_pairs"]),
+                    _format_float(float(row["rescue_success_rate"])),
+                    _format_float(float(row["induction_success_rate"])),
+                    _format_float(float(row["robust_rate_after_patch"])),
+                    _format_float(float(row["shortcut_rate_after_patch"])),
+                    _format_float(float(row["visible_pass_hidden_fail_rate_after_patch"])),
+                    _format_float(float(row["patch_applied_rate"])),
+                    _format_float(float(row["top1_changed_rate"])),
+                ]
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def highlight_route_patching_rows(
+    rows: Iterable[CodingRoutePatchingSummaryRow | Mapping[str, Any]],
+) -> str:
+    """Render concise highlights for grouped route patching summaries."""
+
+    summary_rows = [
+        (
+            row
+            if isinstance(row, CodingRoutePatchingSummaryRow)
+            else CodingRoutePatchingSummaryRow(**dict(row))
+        )
+        for row in rows
+    ]
+    if not summary_rows:
+        return "No route patching summary rows were produced.\n"
+
+    rescue_rows = [row for row in summary_rows if row.direction == "rescue"]
+    induction_rows = [row for row in summary_rows if row.direction == "induction"]
+    lines = ["Highlights:"]
+    if rescue_rows:
+        best_rescue = max(rescue_rows, key=lambda row: row.rescue_success_rate)
+        lines.append(
+            "  Best rescue configuration by rescue_success_rate: "
+            f"{best_rescue.pressure_type}, layer={best_rescue.layer}, "
+            f"position_window={best_rescue.position_window}, "
+            f"value={_format_float(best_rescue.rescue_success_rate)}"
+        )
+    if induction_rows:
+        best_induction = max(induction_rows, key=lambda row: row.induction_success_rate)
+        lines.append(
+            "  Best induction configuration by induction_success_rate: "
+            f"{best_induction.pressure_type}, layer={best_induction.layer}, "
+            f"position_window={best_induction.position_window}, "
+            f"value={_format_float(best_induction.induction_success_rate)}"
+        )
+    if rescue_rows or induction_rows:
+        strongest_boundary_row = max(
+            summary_rows,
+            key=lambda row: max(row.rescue_success_rate, row.induction_success_rate),
+        )
+        best_success = max(
+            strongest_boundary_row.rescue_success_rate,
+            strongest_boundary_row.induction_success_rate,
+        )
+        lines.append(
+            "  Comparison to the previous final-prompt-only null setup: "
+            + (
+                "early-generation patching is stronger."
+                if best_success > 0.0
+                else "no stronger signal was detected."
+            )
+        )
+        lines.append(
+            "  Prompt-to-generation boundary interpretation: "
+            + (
+                "signal is concentrated at the boundary / first generated token."
+                if strongest_boundary_row.position_window == "gen_1"
+                else "signal appears to require a broader early-generation window."
+            )
+        )
+        lines.append(
+            "  Strongest early-generation cell: "
+            f"layer={strongest_boundary_row.layer}, "
+            f"position_window={strongest_boundary_row.position_window}, "
+            f"direction={strongest_boundary_row.direction}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def route_patching_summary_to_csv_text(
+    rows: Iterable[CodingRoutePatchingSummaryRow | Mapping[str, Any]],
+) -> str:
+    """Render grouped route patching summaries as CSV text."""
+
+    header = (
+        "pressure_type,layer,position_window,direction,n_pairs,rescue_success_rate,"
+        "induction_success_rate,robust_rate_after_patch,shortcut_rate_after_patch,"
+        "visible_pass_hidden_fail_rate_after_patch,patch_applied_rate,top1_changed_rate"
+    )
+    body = [
+        ",".join(
+            [
+                str(row["pressure_type"]),
+                str(row["layer"]),
+                str(row["position_window"]),
+                str(row["direction"]),
+                str(row["n_pairs"]),
+                _format_float(float(row["rescue_success_rate"])),
+                _format_float(float(row["induction_success_rate"])),
+                _format_float(float(row["robust_rate_after_patch"])),
+                _format_float(float(row["shortcut_rate_after_patch"])),
+                _format_float(float(row["visible_pass_hidden_fail_rate_after_patch"])),
+                _format_float(float(row["patch_applied_rate"])),
+                _format_float(float(row["top1_changed_rate"])),
+            ]
+        )
+        for row in (
+            asdict(item) if isinstance(item, CodingRoutePatchingSummaryRow) else dict(item)
+            for item in rows
+        )
+    ]
+    return "\n".join([header, *body]) + "\n"
+
+
+def write_route_patching_summary_csv(
+    rows: Iterable[CodingRoutePatchingSummaryRow | Mapping[str, Any]],
+    output_path: Path,
+) -> Path:
+    """Write grouped route patching summary rows to CSV."""
+
+    ensure_directory(output_path.parent)
+    output_path.write_text(route_patching_summary_to_csv_text(rows), encoding="utf-8")
+    return output_path
+
+
+def plot_route_patching_success_by_layer(
+    rows: Iterable[CodingRoutePatchingSummaryRow | Mapping[str, Any]],
+    *,
+    direction: Direction,
+    output_path: Path,
+) -> Path:
+    """Plot rescue or induction success by layer for each position window."""
+
+    from matplotlib import pyplot as plt
+
+    summary_rows = [
+        (
+            row
+            if isinstance(row, CodingRoutePatchingSummaryRow)
+            else CodingRoutePatchingSummaryRow(**dict(row))
+        )
+        for row in rows
+    ]
+    filtered_rows = [row for row in summary_rows if row.direction == direction]
+    ensure_directory(output_path.parent)
+    fig, axis = plt.subplots(figsize=(7.5, 4.5))
+    metric_name = "rescue_success_rate" if direction == "rescue" else "induction_success_rate"
+    for position_window in EARLY_GENERATION_POSITION_WINDOWS:
+        window_rows = sorted(
+            (row for row in filtered_rows if row.position_window == position_window),
+            key=lambda row: row.layer,
+        )
+        if not window_rows:
+            continue
+        axis.plot(
+            [row.layer for row in window_rows],
+            [getattr(row, metric_name) for row in window_rows],
+            marker="o",
+            label=position_window,
+        )
+    axis.set_xlabel("Layer")
+    axis.set_ylabel(metric_name)
+    axis.set_title(f"Coding route patching {direction} success by layer")
+    axis.legend()
+    axis.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
+def plot_route_patching_position_window_comparison(
+    rows: Iterable[CodingRoutePatchingSummaryRow | Mapping[str, Any]],
+    *,
+    output_path: Path,
+) -> Path:
+    """Plot the best success rate attained by each position window."""
+
+    from matplotlib import pyplot as plt
+
+    summary_rows = [
+        (
+            row
+            if isinstance(row, CodingRoutePatchingSummaryRow)
+            else CodingRoutePatchingSummaryRow(**dict(row))
+        )
+        for row in rows
+    ]
+    ensure_directory(output_path.parent)
+    best_by_window = []
+    labels: list[str] = []
+    for position_window in EARLY_GENERATION_POSITION_WINDOWS:
+        matching_rows = [row for row in summary_rows if row.position_window == position_window]
+        if not matching_rows:
+            continue
+        best_value = max(
+            max(row.rescue_success_rate, row.induction_success_rate) for row in matching_rows
+        )
+        labels.append(position_window)
+        best_by_window.append(best_value)
+
+    fig, axis = plt.subplots(figsize=(7.0, 4.0))
+    axis.bar(labels, best_by_window)
+    axis.set_ylabel("Best success rate")
+    axis.set_title("Coding route patching position-window comparison")
+    axis.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)

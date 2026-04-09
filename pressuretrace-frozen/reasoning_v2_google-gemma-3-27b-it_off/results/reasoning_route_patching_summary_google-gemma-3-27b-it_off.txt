@@ -1,33 +1,41 @@
 PressureTrace reasoning route patching summary
 
-Frozen root: pressuretrace-frozen/reasoning_v2_google-gemma-3-27b-it_off
+Frozen root: /home/ubuntu/pressuretrace/pressuretrace-frozen/reasoning_v2_qwen3_14b_off
 Manifest: pressuretrace-frozen/reasoning_v2_google-gemma-3-27b-it_off/data/manifests/reasoning_paper_slice_google-gemma-3-27b-it_off.jsonl
 Results: pressuretrace-frozen/reasoning_v2_google-gemma-3-27b-it_off/results/reasoning_paper_slice_google-gemma-3-27b-it_off.jsonl
 Patch pairs: pressuretrace-frozen/reasoning_v2_google-gemma-3-27b-it_off/results/reasoning_patch_pairs_google-gemma-3-27b-it_off.jsonl
-Model: Qwen/Qwen3-14B
+Model: google/gemma-3-27b-it
 Thinking mode: off
-First-pass design: prompt-only logit-level patching over the final prompt token; rescue and induction directions; no generation.
-Filters: pressure_type in ('neutral_wrong_answer_cue', 'teacher_anchor'); control=robust_correct; pressure=shortcut_followed; gold and shortcut answers must each tokenize to exactly one token.
-Pairs loaded: 43
-Retained single-token pairs: 2
-Skipped for tokenization: 41
-Rows written: 12
+Design: prompt-only activation patching over the final prompt token; rescue and induction directions; sequence-aware answer scoring; no generation.
+Filters: pressure_type in ('neutral_wrong_answer_cue', 'teacher_anchor'); control=robust_correct; pressure=shortcut_followed; gold and shortcut answers must each tokenize to at least one token.
+Pairs loaded: 63
+Retained answer-sequence pairs: 63
+Skipped for tokenization: 0
+Rows written: 378
 
 Grouped by pressure_type, layer, direction.
 
 pressure_type | layer | direction | n_pairs | mean_delta_gold_prob | mean_delta_shortcut_prob | mean_delta_margin | top1_changed_rate
-teacher_anchor | -10 | induction | 2 | -0.6835 | 0.7101 | -10.3750 | 1.0000
-teacher_anchor | -10 | rescue | 2 | 0.7109 | -0.8125 | 11.2500 | 1.0000
-teacher_anchor | -8 | induction | 2 | -0.6974 | 0.7486 | -11.1250 | 1.0000
-teacher_anchor | -8 | rescue | 2 | 0.7024 | -0.8214 | 11.5000 | 1.0000
-teacher_anchor | -6 | induction | 2 | -0.7206 | 0.8084 | -14.1250 | 1.0000
-teacher_anchor | -6 | rescue | 2 | 0.7332 | -0.8410 | 12.6250 | 1.0000
+neutral_wrong_answer_cue | -10 | induction | 24 | -0.1284 | 0.1284 | -1.9337 | 0.4167
+neutral_wrong_answer_cue | -10 | rescue | 24 | 0.3899 | -0.3899 | 4.0832 | 0.4167
+neutral_wrong_answer_cue | -8 | induction | 24 | -0.2686 | 0.2686 | -3.3583 | 0.5000
+neutral_wrong_answer_cue | -8 | rescue | 24 | 0.4304 | -0.4304 | 4.4918 | 0.4167
+neutral_wrong_answer_cue | -6 | induction | 24 | -0.3763 | 0.3763 | -4.3436 | 0.5833
+neutral_wrong_answer_cue | -6 | rescue | 24 | 0.4860 | -0.4860 | 5.0649 | 0.5833
+teacher_anchor | -10 | induction | 39 | -0.1248 | 0.1248 | -1.8916 | 0.3077
+teacher_anchor | -10 | rescue | 39 | 0.4063 | -0.4063 | 5.0816 | 0.5128
+teacher_anchor | -8 | induction | 39 | -0.3275 | 0.3275 | -3.8979 | 0.4103
+teacher_anchor | -8 | rescue | 39 | 0.4663 | -0.4663 | 5.5656 | 0.5128
+teacher_anchor | -6 | induction | 39 | -0.3850 | 0.3850 | -4.7210 | 0.5128
+teacher_anchor | -6 | rescue | 39 | 0.5002 | -0.5002 | 5.8339 | 0.5897
 
 Highlights:
-  Best rescue layer by mean delta_gold_prob: teacher_anchor, layer=-6, value=0.7332
-  Best rescue layer by mean delta_margin: teacher_anchor, layer=-6, value=12.6250
-  Strongest induction layer by shortcut increase: teacher_anchor, layer=-6, value=0.8084
+  Best rescue layer by mean delta_gold_prob: teacher_anchor, layer=-6, value=0.5002
+  Best rescue layer by mean delta_margin: teacher_anchor, layer=-6, value=5.8339
+  Strongest induction layer by shortcut increase: teacher_anchor, layer=-6, value=0.3850
 
 Per-pressure-type trends:
-  teacher_anchor: rescue best margin at layer=-6 (12.6250)
-  teacher_anchor: induction strongest shortcut increase at layer=-6 (0.8084)
+  neutral_wrong_answer_cue: rescue best margin at layer=-6 (5.0649)
+  neutral_wrong_answer_cue: induction strongest shortcut increase at layer=-6 (0.3763)
+  teacher_anchor: rescue best margin at layer=-6 (5.8339)
+  teacher_anchor: induction strongest shortcut increase at layer=-6 (0.3850)

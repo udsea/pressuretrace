@@ -1,0 +1,29 @@
+PressureTrace reasoning probe summary
+
+Dataset filtering logic:
+  - family == reasoning_conflict
+  - pressure_type in {neutral_wrong_answer_cue, teacher_anchor}
+  - route_label in {robust_correct, shortcut_followed}
+  - binary_label: robust_correct=0, shortcut_followed=1
+
+Hidden-state rows: 1344
+Retained episodes: 112
+Unique base tasks: 57
+Train base tasks: 39
+Test base tasks: 18
+Split stratified by base-task label: True
+Label balance: 0=109, 1=3
+
+Best hidden-state probe result:
+  layer=-8, representation=mean_pool, roc_auc=0.6061, accuracy=0.9429, f1=0.0000
+
+Baseline results:
+  prompt_length: roc_auc=0.5303, accuracy=0.8857
+  tfidf_prompt: roc_auc=0.3333, accuracy=0.9429
+
+Top 5 hidden-state settings:
+  1. layer=-8, representation=mean_pool, roc_auc=0.6061, accuracy=0.9429, f1=0.0000
+  2. layer=-4, representation=last_token, roc_auc=0.5909, accuracy=0.9429, f1=0.0000
+  3. layer=-1, representation=mean_pool, roc_auc=0.5606, accuracy=0.9429, f1=0.0000
+  4. layer=-4, representation=mean_pool, roc_auc=0.5152, accuracy=0.9429, f1=0.0000
+  5. layer=-10, representation=mean_pool, roc_auc=0.5000, accuracy=0.9429, f1=0.0000

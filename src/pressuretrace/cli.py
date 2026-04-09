@@ -8,9 +8,20 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from pressuretrace.behavior.build_coding_control_robust_slice import (
+    build_coding_control_robust_slice,
+)
 from pressuretrace.behavior.build_control_robust_slice import build_control_robust_slice
+from pressuretrace.behavior.materialize_coding_paper_slice import (
+    materialize_coding_paper_slice,
+)
 from pressuretrace.behavior.materialize_reasoning_slice import materialize_reasoning_slice
 from pressuretrace.behavior.run_coding_benchmark import run_coding_pilot
+from pressuretrace.behavior.run_coding_control_only import run_coding_control_only
+from pressuretrace.behavior.run_coding_paper_slice import (
+    run_coding_manifest,
+    run_coding_paper_slice,
+)
 from pressuretrace.behavior.run_reasoning_benchmark import run_reasoning_pilot
 from pressuretrace.behavior.run_reasoning_benchmark_v2 import (
     run_reasoning_manifest_v2,
@@ -19,7 +30,12 @@ from pressuretrace.behavior.run_reasoning_benchmark_v2 import (
 from pressuretrace.behavior.run_reasoning_control_only import run_reasoning_control_only
 from pressuretrace.behavior.summarize_behavior import print_behavior_summary
 from pressuretrace.behavior.summarize_behavior_v2 import print_behavior_summary_v2
+from pressuretrace.behavior.summarize_coding_behavior import (
+    export_coding_behavior_summary,
+    render_coding_behavior_summary_text,
+)
 from pressuretrace.config import DEFAULT_MODELS, PRESSURE_PROFILES
+from pressuretrace.generation.coding.make_coding_tasks import build_coding_all_valid_transforms
 from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
     build_reasoning_all_valid_transforms_v2,
 )
@@ -420,6 +436,298 @@ def coding_pilot_command(
     console.print(f"Wrote coding pilot rows to [bold]{path}[/bold]")
 
 
+@app.command("coding-build-pool-v1")
+def coding_build_pool_v1_command(
+    limit: int | None = typer.Option(
+        None,
+        min=1,
+        help="Optional cap on retained coding-family base tasks.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit manifest JSONL path.",
+    ),
+) -> None:
+    """Build the full coding-family transform pool."""
+
+    manifest_path = build_coding_all_valid_transforms(limit=limit, output_path=output_path)
+    console.print(f"Transform pool: [bold]{manifest_path}[/bold]")
+
+
+@app.command("coding-control-only-v1")
+def coding_control_only_v1_command(
+    manifest_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--manifest-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Frozen coding-family manifest to evaluate under control only.",
+    ),
+    model_name: str = typer.Option(
+        "Qwen/Qwen3-14B",
+        help="Model identifier recorded in output rows.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit output JSONL path.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run/--no-dry-run",
+        help="Build artifacts without running model inference.",
+    ),
+    thinking_mode: str = typer.Option(
+        "off",
+        "--thinking-mode",
+        help="Thinking mode for supported models: default, on, or off.",
+    ),
+    batch_size: int = typer.Option(1, min=1, help="Batch size for inference."),
+    show_progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Show live inference progress while the control-only run executes.",
+    ),
+) -> None:
+    """Run only control rows from a frozen coding-family manifest."""
+
+    artifacts = run_coding_control_only(
+        manifest_path=manifest_path,
+        model_name=model_name,
+        output_path=output_path,
+        dry_run=dry_run,
+        thinking_mode=thinking_mode,
+        batch_size=batch_size,
+        console=console,
+        show_progress=show_progress,
+    )
+    console.print(f"Manifest: [bold]{artifacts.manifest_path}[/bold]")
+    console.print(f"Results: [bold]{artifacts.results_path}[/bold]")
+
+
+@app.command("coding-freeze-slice-v1")
+def coding_freeze_slice_v1_command(
+    input_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--input-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Control-only coding results used to freeze the robust slice.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit split JSONL path.",
+    ),
+) -> None:
+    """Freeze the model-specific coding-family control-robust slice."""
+
+    slice_path = build_coding_control_robust_slice(
+        control_results_path=input_path,
+        output_path=output_path,
+    )
+    console.print(f"Control-robust slice: [bold]{slice_path}[/bold]")
+
+
+@app.command("coding-materialize-slice-v1")
+def coding_materialize_slice_v1_command(
+    manifest_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--manifest-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Broad coding-family transform pool manifest.",
+    ),
+    slice_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--slice-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Frozen coding-family control-robust slice JSONL.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit paper-slice manifest path.",
+    ),
+) -> None:
+    """Materialize the coding-family paper-slice manifest from a frozen slice."""
+
+    materialized_path = materialize_coding_paper_slice(
+        manifest_path=manifest_path,
+        slice_path=slice_path,
+        output_path=output_path,
+    )
+    console.print(f"Paper-slice manifest: [bold]{materialized_path}[/bold]")
+
+
+@app.command("coding-run-manifest-v1")
+def coding_run_manifest_v1_command(
+    manifest_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--manifest-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Frozen coding-family manifest to run directly.",
+    ),
+    model_name: str = typer.Option(
+        "Qwen/Qwen3-14B",
+        help="Model identifier recorded in output rows.",
+    ),
+    pressure_type: str = typer.Option(
+        "all",
+        help="Pressure type to run from the manifest, or 'all' to run every pressure type.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit output JSONL path.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run/--no-dry-run",
+        help="Build artifacts without running model inference.",
+    ),
+    include_control: bool = typer.Option(
+        True,
+        "--include-control/--pressure-only",
+        help="Include control episodes alongside pressure episodes.",
+    ),
+    thinking_mode: str = typer.Option(
+        "off",
+        "--thinking-mode",
+        help="Thinking mode for supported models: default, on, or off.",
+    ),
+    batch_size: int = typer.Option(1, min=1, help="Batch size for inference."),
+    show_progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Show live inference progress while the manifest run executes.",
+    ),
+) -> None:
+    """Run inference over an already frozen coding-family manifest."""
+
+    artifacts = run_coding_manifest(
+        manifest_path=manifest_path,
+        model_name=model_name,
+        pressure_type=pressure_type,
+        output_path=output_path,
+        dry_run=dry_run,
+        include_control=include_control,
+        thinking_mode=thinking_mode,
+        batch_size=batch_size,
+        console=console,
+        show_progress=show_progress,
+    )
+    console.print(f"Manifest: [bold]{artifacts.manifest_path}[/bold]")
+    console.print(f"Results: [bold]{artifacts.results_path}[/bold]")
+
+
+@app.command("coding-paper-slice-v1")
+def coding_paper_slice_v1_command(
+    manifest_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--manifest-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Frozen coding-family paper-slice manifest.",
+    ),
+    model_name: str = typer.Option(
+        "Qwen/Qwen3-14B",
+        help="Model identifier recorded in output rows.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit output JSONL path.",
+    ),
+    pressure_type: str = typer.Option(
+        "all",
+        help="Pressure type to run from the manifest, or 'all' to run every pressure type.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run/--no-dry-run",
+        help="Build artifacts without running model inference.",
+    ),
+    thinking_mode: str = typer.Option(
+        "off",
+        "--thinking-mode",
+        help="Thinking mode for supported models: default, on, or off.",
+    ),
+    batch_size: int = typer.Option(1, min=1, help="Batch size for inference."),
+    show_progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Show live inference progress while the paper-slice run executes.",
+    ),
+) -> None:
+    """Run the coding-family paper slice."""
+
+    artifacts = run_coding_paper_slice(
+        manifest_path=manifest_path,
+        model_name=model_name,
+        output_path=output_path,
+        pressure_type=pressure_type,
+        dry_run=dry_run,
+        thinking_mode=thinking_mode,
+        batch_size=batch_size,
+        console=console,
+        show_progress=show_progress,
+    )
+    console.print(f"Manifest: [bold]{artifacts.manifest_path}[/bold]")
+    console.print(f"Results: [bold]{artifacts.results_path}[/bold]")
+
+
+@app.command("coding-summarize-v1")
+def coding_summarize_v1_command(
+    input_path: Path = typer.Option(  # noqa: B008
+        ...,
+        "--input-path",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Coding-family result JSONL file to summarize.",
+    ),
+    text_output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--text-output-path",
+        help="Optional summary text output path.",
+    ),
+    csv_output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--csv-output-path",
+        help="Optional summary CSV output path.",
+    ),
+) -> None:
+    """Print and optionally export coding-family behavior summaries."""
+
+    summary_text = render_coding_behavior_summary_text(input_path)
+    console.print(summary_text.rstrip())
+    if text_output_path is not None and csv_output_path is not None:
+        export_coding_behavior_summary(
+            input_path=input_path,
+            text_output_path=text_output_path,
+            csv_output_path=csv_output_path,
+        )
+        console.print(f"Summary text: [bold]{text_output_path}[/bold]")
+        console.print(f"Summary CSV: [bold]{csv_output_path}[/bold]")
+
+
 @app.command("summarize")
 def summarize_command(
     input_path: Path = typer.Option(  # noqa: B008
@@ -681,9 +989,7 @@ def reasoning_route_patching_command(
         model_name=model_name,
         thinking_mode=thinking_mode,
         layers=tuple(int(part.strip()) for part in layers.split(",") if part.strip()),
-        pressure_types=tuple(
-            part.strip() for part in pressure_types.split(",") if part.strip()
-        ),
+        pressure_types=tuple(part.strip() for part in pressure_types.split(",") if part.strip()),
         max_pairs=max_pairs,
     )
     artifacts = run_reasoning_route_patching(config)

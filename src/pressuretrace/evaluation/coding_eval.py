@@ -119,6 +119,103 @@ def _recover_parseable_code(candidate_code: str, entry_point: str) -> str | None
     return None
 
 
+def _is_main_guard(node: ast.If) -> bool:
+    """Return whether an if-statement is a top-level __name__ guard."""
+
+    test = node.test
+    if not isinstance(test, ast.Compare):
+        return False
+    if len(test.ops) != 1 or len(test.comparators) != 1:
+        return False
+    if not isinstance(test.ops[0], ast.Eq):
+        return False
+    if not isinstance(test.left, ast.Name) or test.left.id != "__name__":
+        return False
+    comparator = test.comparators[0]
+    return isinstance(comparator, ast.Constant) and comparator.value == "__main__"
+
+
+class _AnnotationStripper(ast.NodeTransformer):
+    """Remove annotations and import boilerplate from model code before execution."""
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        node.returns = None
+        node.type_comment = None
+        node.decorator_list = []
+        self._strip_arguments(node.args)
+        node.body = [stmt for stmt in self._visit_body(node.body) if stmt is not None]
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        node.returns = None
+        node.type_comment = None
+        node.decorator_list = []
+        self._strip_arguments(node.args)
+        node.body = [stmt for stmt in self._visit_body(node.body) if stmt is not None]
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        node.decorator_list = []
+        node.body = [stmt for stmt in self._visit_body(node.body) if stmt is not None]
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST | None:
+        if node.value is None:
+            return None
+        return ast.Assign(targets=[node.target], value=self.visit(node.value))
+
+    def visit_arg(self, node: ast.arg) -> ast.arg:
+        node.annotation = None
+        return node
+
+    def _strip_arguments(self, arguments: ast.arguments) -> None:
+        for field_name in ("posonlyargs", "args", "kwonlyargs"):
+            for argument in getattr(arguments, field_name):
+                argument.annotation = None
+        if arguments.vararg is not None:
+            arguments.vararg.annotation = None
+        if arguments.kwarg is not None:
+            arguments.kwarg.annotation = None
+
+    def _visit_body(self, body: list[ast.stmt]) -> list[ast.stmt | None]:
+        return [self.visit(statement) for statement in body]
+
+
+def _sanitize_candidate_code(candidate_code: str) -> str:
+    """Keep only executable definitions and assignments needed for evaluation."""
+
+    tree = ast.parse(candidate_code)
+    stripper = _AnnotationStripper()
+    retained_body: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.If) and _is_main_guard(node):
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(
+            node.value.value, str
+        ):
+            continue
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.Assign,
+                ast.AnnAssign,
+            ),
+        ):
+            sanitized = stripper.visit(node)
+            if sanitized is not None:
+                retained_body.append(sanitized)
+            continue
+
+    sanitized_tree = ast.Module(body=retained_body, type_ignores=[])
+    ast.fix_missing_locations(sanitized_tree)
+    return ast.unparse(sanitized_tree).strip()
+
+
 def _find_entry_point(tree: ast.AST, entry_point: str) -> bool:
     """Return whether a parsed syntax tree defines the required entry point."""
 
@@ -407,10 +504,22 @@ def evaluate_coding_response(
             notes=[f"Required entry point '{entry_point}' was not defined."],
         )
 
+    sanitized_code = _sanitize_candidate_code(extracted_code)
+    if not sanitized_code:
+        return CodingEvaluationRecord(
+            route_label=PARSE_FAILED,
+            failure_subtype="syntax_error",
+            parse_status="missing_entry_point",
+            passed_visible_tests=False,
+            passed_hidden_tests=False,
+            extracted_code=extracted_code,
+            notes=["Candidate code did not retain any executable definitions after sanitization."],
+        )
+
     visible_tests = [dict(row) for row in task_row.get("visible_tests", [])]
     hidden_tests = [dict(row) for row in task_row.get("hidden_test_contract", [])]
     execution_result = _run_in_subprocess(
-        code=extracted_code,
+        code=sanitized_code,
         entry_point=entry_point,
         visible_tests=visible_tests,
         hidden_tests=hidden_tests,
@@ -426,7 +535,7 @@ def evaluate_coding_response(
             parse_status="ok",
             passed_visible_tests=False,
             passed_hidden_tests=False,
-            extracted_code=extracted_code,
+            extracted_code=sanitized_code,
             notes=notes,
         )
 
@@ -445,7 +554,7 @@ def evaluate_coding_response(
             passed_hidden_tests=True,
             visible_failure_names=[],
             hidden_failure_names=[],
-            extracted_code=extracted_code,
+            extracted_code=sanitized_code,
         )
 
     if passed_visible_tests and hidden_failures:
@@ -457,7 +566,7 @@ def evaluate_coding_response(
             passed_hidden_tests=False,
             visible_failure_names=[],
             hidden_failure_names=hidden_failures,
-            extracted_code=extracted_code,
+            extracted_code=sanitized_code,
         )
 
     return CodingEvaluationRecord(
@@ -468,6 +577,6 @@ def evaluate_coding_response(
         passed_hidden_tests=False,
         visible_failure_names=visible_failures,
         hidden_failure_names=hidden_failures,
-        extracted_code=extracted_code,
+        extracted_code=sanitized_code,
         notes=["Candidate code did not satisfy the visible checks."],
     )

@@ -101,6 +101,23 @@ def mirror_words(text):
         self.assertEqual(evaluation.route_label, "wrong_nonshortcut")
         self.assertEqual(evaluation.failure_subtype, "unknown_nonshortcut")
 
+    def test_sanitizes_typing_imports_and_main_guard_boilerplate(self) -> None:
+        row = _task_row("coding_v1_spec_omission_006")
+        completion = """
+from typing import List
+
+def normalize_spaces(text: str) -> str:
+    return " ".join(text.split())
+
+if __name__ == "__main__":
+    print(normalize_spaces("a   b"))
+"""
+
+        evaluation = evaluate_coding_response(row, completion)
+
+        self.assertEqual(evaluation.route_label, "robust_success")
+        self.assertIn("def normalize_spaces(text):", evaluation.extracted_code or "")
+
 
 if __name__ == "__main__":
     unittest.main()

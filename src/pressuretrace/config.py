@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,6 +127,15 @@ REASONING_PROBE_PRESSURE_TYPES: tuple[str, ...] = (
 REASONING_PROBE_ROUTE_LABELS: tuple[str, ...] = ("shortcut_followed", "robust_correct")
 REASONING_PROBE_RANDOM_SEED = 42
 REASONING_PROBE_TEST_SIZE = 0.3
+CODING_V1_MODEL_NAME = "Qwen/Qwen3-14B"
+CODING_V1_THINKING_MODE = "off"
+CODING_PROBE_FAMILY = "coding_v1"
+CODING_PROBE_LAYERS: tuple[int, ...] = REASONING_PROBE_LAYERS
+CODING_PROBE_REPRESENTATIONS: tuple[str, ...] = REASONING_PROBE_REPRESENTATIONS
+CODING_PROBE_PRESSURE_TYPES: tuple[str, ...] = REASONING_PROBE_PRESSURE_TYPES
+CODING_PROBE_ROUTE_LABELS: tuple[str, ...] = ("robust_success", "shortcut_success")
+CODING_PROBE_RANDOM_SEED = REASONING_PROBE_RANDOM_SEED
+CODING_PROBE_TEST_SIZE = REASONING_PROBE_TEST_SIZE
 
 
 def resolve_reasoning_frozen_root() -> Path:
@@ -212,6 +222,116 @@ def reasoning_probe_summary_path() -> Path:
         resolve_reasoning_frozen_root()
         / "results"
         / "reasoning_probe_summary_qwen-qwen3-14b_off.txt"
+    )
+
+
+def resolve_coding_frozen_root() -> Path:
+    """Resolve the frozen coding artifact root across local naming variants."""
+
+    configured_root = os.environ.get("PRESSURETRACE_CODING_FROZEN_ROOT", "").strip()
+    repo_frozen_root = repo_root() / "pressuretrace-frozen"
+    default_root = repo_frozen_root / "coding_v1_qwen-qwen3-14b_off"
+    preferred_roots = (
+        repo_frozen_root / "coding_v1_qwen-qwen3-14b_off_v1_behavior_final",
+        repo_frozen_root / "coding_v1_qwen-qwen3-14b_off_neutralcue_tune_01",
+        default_root,
+    )
+
+    candidates: list[Path] = []
+    if configured_root:
+        candidates.append(Path(configured_root))
+    candidates.extend(preferred_roots)
+    if repo_frozen_root.exists():
+        candidates.extend(
+            sorted(
+                path
+                for path in repo_frozen_root.iterdir()
+                if path.is_dir() and path.name.startswith("coding_v1_qwen-qwen3-14b_off")
+            )
+        )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if (candidate / "data").exists() and (candidate / "results").exists():
+            return candidate
+
+    if configured_root:
+        return Path(configured_root)
+    return default_root
+
+
+def coding_probe_manifest_path() -> Path:
+    """Return the frozen coding paper-slice manifest path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "data"
+        / "manifests"
+        / "coding_paper_slice_qwen-qwen3-14b_off.jsonl"
+    )
+
+
+def coding_probe_slice_path() -> Path:
+    """Return the frozen coding control-robust slice path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "data"
+        / "splits"
+        / "coding_control_robust_slice_qwen-qwen3-14b_off.jsonl"
+    )
+
+
+def coding_probe_results_path() -> Path:
+    """Return the frozen coding paper-slice results path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "results"
+        / "coding_paper_slice_qwen-qwen3-14b_off.jsonl"
+    )
+
+
+def coding_probe_hidden_states_path() -> Path:
+    """Return the default coding hidden-state extraction output path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "results"
+        / "coding_probe_hidden_states_qwen-qwen3-14b_off.jsonl"
+    )
+
+
+def coding_probe_dataset_path() -> Path:
+    """Return the default coding probe dataset output path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "results"
+        / "coding_probe_dataset_qwen-qwen3-14b_off.jsonl"
+    )
+
+
+def coding_probe_metrics_path() -> Path:
+    """Return the default coding probe metrics output path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "results"
+        / "coding_probe_metrics_qwen-qwen3-14b_off.jsonl"
+    )
+
+
+def coding_probe_summary_path() -> Path:
+    """Return the default coding probe summary output path."""
+
+    return (
+        resolve_coding_frozen_root()
+        / "results"
+        / "coding_probe_summary_qwen-qwen3-14b_off.txt"
     )
 
 

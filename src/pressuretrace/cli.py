@@ -35,7 +35,18 @@ from pressuretrace.behavior.summarize_coding_behavior import (
     export_coding_behavior_summary,
     render_coding_behavior_summary_text,
 )
-from pressuretrace.config import DEFAULT_MODELS, PRESSURE_PROFILES
+from pressuretrace.config import (
+    CODING_V1_MODEL_NAME,
+    CODING_V1_THINKING_MODE,
+    DEFAULT_MODELS,
+    PRESSURE_PROFILES,
+    coding_probe_dataset_path,
+    coding_probe_hidden_states_path,
+    coding_probe_manifest_path,
+    coding_probe_metrics_path,
+    coding_probe_results_path,
+    coding_probe_summary_path,
+)
 from pressuretrace.evaluation.coding_eval_debug import run_coding_eval_debug
 from pressuretrace.generation.coding.make_coding_tasks import build_coding_all_valid_transforms
 from pressuretrace.generation.reasoning.make_reasoning_tasks_v2 import (
@@ -802,6 +813,151 @@ def coding_summarize_v1_command(
         )
         console.print(f"Summary text: [bold]{text_output_path}[/bold]")
         console.print(f"Summary CSV: [bold]{csv_output_path}[/bold]")
+
+
+@app.command("coding-probe-extract-v1")
+def coding_probe_extract_v1_command(
+    manifest_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--manifest-path",
+        help="Frozen coding paper-slice manifest JSONL.",
+    ),
+    results_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--results-path",
+        help="Frozen coding paper-slice results JSONL.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Coding hidden-state JSONL output path.",
+    ),
+    model_name: str = typer.Option(
+        CODING_V1_MODEL_NAME,
+        help="Model name recorded in frozen coding rows.",
+    ),
+    thinking_mode: str = typer.Option(
+        CODING_V1_THINKING_MODE,
+        "--thinking-mode",
+        help="Thinking mode recorded in frozen coding rows.",
+    ),
+) -> None:
+    """Extract hidden states for the frozen coding paper slice."""
+
+    from pressuretrace.probes.extract_hidden_states_coding import (
+        CodingProbeExtractionConfig,
+        extract_coding_hidden_states,
+    )
+
+    output = extract_coding_hidden_states(
+        CodingProbeExtractionConfig(
+            manifest_path=manifest_path or coding_probe_manifest_path(),
+            results_path=results_path or coding_probe_results_path(),
+            output_path=output_path or coding_probe_hidden_states_path(),
+            model_name=model_name,
+            thinking_mode=thinking_mode,
+        )
+    )
+    console.print(f"hidden_states: [bold]{output}[/bold]")
+
+
+@app.command("coding-probe-dataset-v1")
+def coding_probe_dataset_v1_command(
+    input_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--input-path",
+        help="Coding hidden-state JSONL input path.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Coding probe dataset JSONL output path.",
+    ),
+) -> None:
+    """Build the compact coding probe dataset."""
+
+    from pressuretrace.probes.build_coding_probe_dataset import build_coding_probe_dataset
+
+    output = build_coding_probe_dataset(
+        input_path=input_path or coding_probe_hidden_states_path(),
+        output_path=output_path or coding_probe_dataset_path(),
+    )
+    console.print(f"probe_dataset: [bold]{output}[/bold]")
+
+
+@app.command("coding-train-probes-v1")
+def coding_train_probes_v1_command(
+    input_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--input-path",
+        help="Coding probe dataset JSONL input path.",
+    ),
+    metrics_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--metrics-path",
+        help="Coding probe metrics JSONL output path.",
+    ),
+    summary_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-path",
+        help="Coding probe summary TXT output path.",
+    ),
+) -> None:
+    """Train first-pass coding probes on frozen hidden states."""
+
+    from pressuretrace.probes.train_coding_probes import (
+        CodingProbeTrainingConfig,
+        train_coding_probes,
+    )
+
+    output = train_coding_probes(
+        CodingProbeTrainingConfig(
+            input_path=input_path or coding_probe_dataset_path(),
+            metrics_path=metrics_path or coding_probe_metrics_path(),
+            summary_path=summary_path or coding_probe_summary_path(),
+        )
+    )
+    console.print(f"probe_metrics: [bold]{output}[/bold]")
+    console.print(
+        f"probe_summary: [bold]{summary_path or coding_probe_summary_path()}[/bold]"
+    )
+
+
+@app.command("coding-probe-summary-export-v1")
+def coding_probe_summary_export_v1_command(
+    frozen_root: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--frozen-root",
+        help="Optional frozen coding probe root; defaults to the configured root.",
+    ),
+    artifact_index: bool = typer.Option(
+        True,
+        "--artifact-index/--no-artifact-index",
+        help="Write ARTIFACTS.md under the frozen coding root.",
+    ),
+    metrics_csv: bool = typer.Option(
+        True,
+        "--metrics-csv/--no-metrics-csv",
+        help="Write the flat coding probe metrics CSV under frozen results.",
+    ),
+    summary: bool = typer.Option(
+        True,
+        "--summary/--no-summary",
+        help="Rewrite the human-readable coding probe summary under frozen results.",
+    ),
+) -> None:
+    """Export derived frozen coding probe reports."""
+
+    from pressuretrace.analysis.coding_probe_reports import export_probe_reports
+
+    outputs = export_probe_reports(
+        frozen_root=frozen_root,
+        write_artifact_index=artifact_index,
+        write_csv=metrics_csv,
+        write_summary=summary,
+    )
+    for name, path in outputs.items():
+        console.print(f"{name}: [bold]{path}[/bold]")
 
 
 @app.command("summarize")

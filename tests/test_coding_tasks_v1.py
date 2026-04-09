@@ -56,6 +56,12 @@ class CodingTasksV1TestCase(unittest.TestCase):
             if row["pressure_type"] == "neutral_wrong_answer_cue"
             and row["base_task_id"] == "coding_v1_spec_omission_001"
         )
+        control_spec_prompt = next(
+            row["prompt"]
+            for row in rows
+            if row["pressure_type"] == "control"
+            and row["base_task_id"] == "coding_v1_spec_omission_001"
+        )
         neutral_checker_prompt = next(
             row["prompt"]
             for row in rows
@@ -69,6 +75,9 @@ class CodingTasksV1TestCase(unittest.TestCase):
         self.assertIn("Potential narrow patch direction", teacher_prompt)
         self.assertIn("The current patch under review is shown in Starter.", neutral_spec_prompt)
         self.assertIn("return text.count(pattern)", neutral_spec_prompt)
+        self.assertIn("Count substring matches.", control_spec_prompt)
+        self.assertNotIn("counting overlapping matches", control_spec_prompt)
+        self.assertNotIn("counting overlapping matches", neutral_spec_prompt)
         self.assertIn("return sorted(set(items))", neutral_checker_prompt)
 
 

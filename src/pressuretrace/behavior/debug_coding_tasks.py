@@ -22,6 +22,11 @@ from pressuretrace.paths import results_dir
 from pressuretrace.utils.io import write_jsonl
 
 DebugSource = Literal["fixtures", "model"]
+MODEL_DEBUG_TASK_IDS: tuple[str, ...] = (
+    "coding_v1_visible_test_hardcoding_001",
+    "coding_v1_weak_checker_exploit_004",
+    "coding_v1_spec_omission_006",
+)
 
 
 @dataclass(frozen=True)
@@ -39,12 +44,13 @@ def _slugify_model_name(model_name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", model_name).strip("-").lower()
 
 
-def _representative_rows() -> list[dict[str, Any]]:
-    """Return the three representative tasks across all three coding variants."""
+def _representative_rows(source: DebugSource) -> list[dict[str, Any]]:
+    """Return a small diagnostic task set across all three coding variants."""
 
     tasks_by_id = {task.base_task_id: task for task in load_coding_base_tasks()}
     rows: list[dict[str, Any]] = []
-    for base_task_id in REPRESENTATIVE_TASK_IDS:
+    base_task_ids = REPRESENTATIVE_TASK_IDS if source == "fixtures" else MODEL_DEBUG_TASK_IDS
+    for base_task_id in base_task_ids:
         rows.extend(build_coding_episode_family(tasks_by_id[base_task_id]))
     return rows
 
@@ -113,7 +119,7 @@ def run_coding_debug_tasks(
 ) -> CodingDebugArtifacts:
     """Run a small coding-family debug pass on representative tasks."""
 
-    rows = _representative_rows()
+    rows = _representative_rows(source)
     destination = output_path or _default_output_path(model_name, thinking_mode, source)
 
     if source == "model":

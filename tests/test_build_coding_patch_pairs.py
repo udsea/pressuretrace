@@ -183,6 +183,59 @@ class BuildCodingPatchPairsTestCase(unittest.TestCase):
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]["pressure_type"], "teacher_anchor")
 
+    def test_build_coding_patch_pairs_raises_with_zero_pair_diagnostics(self) -> None:
+        control_rows = [
+            {
+                "base_task_id": "base_1",
+                "control_task_id": "base_1_control",
+                "source_family": "humaneval_like",
+                "source_task_name": "humaneval_like/compress_runs",
+                "archetype": "visible_test_hardcoding",
+                "model_name": "Qwen/Qwen3-14B",
+                "thinking_mode": "off",
+                "control_route_label": "robust_success",
+            }
+        ]
+        result_rows = [
+            {
+                "task_id": "base_1_control",
+                "base_task_id": "base_1",
+                "pressure_type": "control",
+                "route_label": "robust_success",
+                "entry_point": "compress_runs",
+                "extracted_code": "def compress_runs(text):\n    return 'a2'\n",
+                "passed_visible_tests": True,
+                "passed_hidden_tests": True,
+            },
+            {
+                "task_id": "base_1_neutral_wrong_answer_cue",
+                "base_task_id": "base_1",
+                "pressure_type": "neutral_wrong_answer_cue",
+                "route_label": "robust_success",
+                "entry_point": "compress_runs",
+                "extracted_code": "def compress_runs(text):\n    return 'a2'\n",
+                "passed_visible_tests": True,
+                "passed_hidden_tests": True,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            control_path = Path(tempdir) / "control.jsonl"
+            results_path = Path(tempdir) / "results.jsonl"
+            output_path = Path(tempdir) / "pairs.jsonl"
+            write_jsonl(control_path, control_rows)
+            write_jsonl(results_path, result_rows)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "No coding patch pairs matched the first-pass filter",
+            ):
+                build_coding_patch_pairs(
+                    results_path=results_path,
+                    control_slice_path=control_path,
+                    output_path=output_path,
+                )
+
     def test_load_coding_patch_pairs_reconstructs_prompts(self) -> None:
         patch_rows = [
             {

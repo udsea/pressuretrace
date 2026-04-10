@@ -85,6 +85,69 @@ def _result_rows_by_base_task_id(results_path: Path) -> dict[str, list[dict[str,
     return grouped
 
 
+def _format_counts(counter: Counter[str]) -> str:
+    """Render a counter in stable key order for diagnostics."""
+
+    if not counter:
+        return "<none>"
+    return ", ".join(f"{key}={counter[key]}" for key in sorted(counter))
+
+
+def _raise_zero_pair_error(
+    *,
+    control_by_base_task_id: dict[str, dict[str, Any]],
+    result_rows_by_base_task_id: dict[str, list[dict[str, Any]]],
+    allowed_pressure_types: set[str],
+) -> None:
+    """Raise an explicit diagnostic error when no coding patch pairs are available."""
+
+    control_archetype_counts = Counter(
+        str(row.get("archetype", "") or "<missing>")
+        for row in control_by_base_task_id.values()
+    )
+    visible_hardcoding_base_ids = {
+        base_task_id
+        for base_task_id, row in control_by_base_task_id.items()
+        if str(row.get("archetype", "")) == "visible_test_hardcoding"
+    }
+    pressure_shortcut_rows = [
+        row
+        for rows in result_rows_by_base_task_id.values()
+        for row in rows
+        if str(row.get("pressure_type")) in allowed_pressure_types
+        and str(row.get("route_label")) == "shortcut_success"
+    ]
+    pressure_shortcut_archetype_counts = Counter(
+        str(row.get("archetype", "") or "<missing>") for row in pressure_shortcut_rows
+    )
+    pressure_shortcut_base_ids = {
+        str(row["base_task_id"]) for row in pressure_shortcut_rows
+    }
+    overlap_base_ids = visible_hardcoding_base_ids & pressure_shortcut_base_ids
+    message_lines = [
+        "No coding patch pairs matched the first-pass filter.",
+        "Required filter: control=robust_success, archetype=visible_test_hardcoding, "
+        f"pressure_type in {tuple(sorted(allowed_pressure_types))}, pressure=shortcut_success.",
+        f"Control slice archetypes: {_format_counts(control_archetype_counts)}",
+        (
+            "Visible-test-hardcoding base tasks in control slice: "
+            f"{len(visible_hardcoding_base_ids)}"
+        ),
+        (
+            "Pressure shortcut rows by archetype: "
+            f"{_format_counts(pressure_shortcut_archetype_counts)}"
+        ),
+        (
+            "Pressure shortcut base-task overlap with visible_test_hardcoding slice: "
+            f"{len(overlap_base_ids)}"
+        ),
+    ]
+    if overlap_base_ids:
+        example_ids = ", ".join(sorted(overlap_base_ids)[:10])
+        message_lines.append(f"Example overlapping base_task_ids: {example_ids}")
+    raise ValueError(" ".join(message_lines))
+
+
 def _find_control_result_row(rows: list[dict[str, Any]], control_task_id: str) -> dict[str, Any]:
     """Find the control result row matching the frozen control slice entry."""
 
@@ -220,6 +283,12 @@ def build_coding_patch_pairs(
             for archetype in sorted(archetype_counts)
         )
     )
+    if not pair_rows:
+        _raise_zero_pair_error(
+            control_by_base_task_id=control_by_base_task_id,
+            result_rows_by_base_task_id=result_rows_by_base_task_id,
+            allowed_pressure_types=allowed_pressure_types,
+        )
     return output_path
 
 

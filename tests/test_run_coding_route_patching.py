@@ -228,6 +228,38 @@ class RunCodingRoutePatchingTestCase(unittest.TestCase):
         self.assertTrue(all("rescue_success" in row for row in rows))
         self.assertTrue(all("induction_success" in row for row in rows))
 
+    def test_run_coding_route_patching_raises_when_no_pairs_are_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            config = build_route_patching_config(
+                frozen_root=temp_root,
+                manifest_path=temp_root / "data" / "manifests" / "coding_paper_slice.jsonl",
+                patch_pairs_path=temp_root / "results" / "coding_patch_pairs.jsonl",
+                results_path=temp_root / "results" / "paper_results.jsonl",
+                output_path=temp_root / "results" / "coding_route_patching.jsonl",
+                summary_txt_path=temp_root / "results" / "coding_route_patching.txt",
+                summary_csv_path=temp_root / "results" / "coding_route_patching.csv",
+                rescue_success_plot_path=temp_root / "results" / "rescue.png",
+                induction_success_plot_path=temp_root / "results" / "induction.png",
+                position_window_comparison_plot_path=temp_root / "results" / "windows.png",
+            )
+
+            with (
+                patch(
+                    "pressuretrace.patching.run_coding_route_patching.load_coding_patch_pairs",
+                    return_value=[],
+                ),
+                patch(
+                    "pressuretrace.patching.run_coding_route_patching._load_task_rows_by_task_id",
+                    return_value=({}, {}),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "No eligible coding patch pairs were available for route patching",
+                ):
+                    run_coding_route_patching(config)
+
 
 if __name__ == "__main__":
     unittest.main()

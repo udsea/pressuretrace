@@ -260,6 +260,23 @@ def _format_counter(counter: Counter[str], order: Sequence[str]) -> str:
     return ", ".join(f"{key}={counter.get(key, 0)}" for key in order)
 
 
+def _raise_no_eligible_pairs_error(
+    *,
+    patch_pairs_path: Path,
+    total_pairs_loaded: int,
+    skipped_missing_task_rows: int,
+) -> None:
+    """Raise a fail-fast error when no coding patch pairs remain for patching."""
+
+    raise ValueError(
+        "No eligible coding patch pairs were available for route patching. "
+        f"Loaded pairs from {patch_pairs_path}: {total_pairs_loaded}. "
+        f"Skipped for missing task rows: {skipped_missing_task_rows}. "
+        "This usually means the pair-builder produced no visible_test_hardcoding + "
+        "neutral_wrong_answer_cue shortcut matches in the frozen coding root."
+    )
+
+
 def select_eligible_patch_pairs(
     pairs: Sequence[CodingPatchPair],
     *,
@@ -496,10 +513,6 @@ def run_coding_route_patching(
         manifest_path=config.manifest_path,
         results_path=config.results_path,
     )
-    bundle = load_model_and_tokenizer(
-        config.model_name,
-        thinking_mode=config.thinking_mode,
-    )
     eligible_pairs, skipped_missing_task_rows = select_eligible_patch_pairs(
         pairs,
         task_rows_by_task_id=task_rows_by_task_id,
@@ -508,6 +521,16 @@ def run_coding_route_patching(
     skipped_tokenization = 0
     if config.max_pairs is not None:
         eligible_pairs = eligible_pairs[: config.max_pairs]
+    if not eligible_pairs:
+        _raise_no_eligible_pairs_error(
+            patch_pairs_path=config.patch_pairs_path,
+            total_pairs_loaded=total_pairs_loaded,
+            skipped_missing_task_rows=skipped_missing_task_rows,
+        )
+    bundle = load_model_and_tokenizer(
+        config.model_name,
+        thinking_mode=config.thinking_mode,
+    )
 
     pressure_counts = Counter(pair.pair.pressure_type for pair in eligible_pairs)
     print(f"Retained pairs: {len(eligible_pairs)}")

@@ -86,6 +86,38 @@ class StepPatchDiagnostic:
 
 
 @dataclass(frozen=True)
+class TokenCandidate:
+    """One token candidate from a next-token distribution."""
+
+    rank: int
+    token_id: int
+    token_str: str
+    logit: float
+    probability: float
+
+
+@dataclass(frozen=True)
+class GenerationStepPatchDebug:
+    """Detailed hidden/logit diagnostics for one patched generation step."""
+
+    generation_step: int
+    prefix_token_ids: tuple[int, ...]
+    baseline_top1_token_id: int
+    baseline_top1_token_str: str
+    patched_top1_token_id: int
+    patched_top1_token_str: str
+    top1_changed: bool
+    hidden_delta_l2: float
+    hidden_delta_max_abs: float
+    donor_target_hidden_delta_l2: float
+    donor_target_hidden_delta_max_abs: float
+    logit_delta_l2: float
+    logit_delta_max_abs: float
+    baseline_top_tokens: tuple[TokenCandidate, ...]
+    patched_top_tokens: tuple[TokenCandidate, ...]
+
+
+@dataclass(frozen=True)
 class GenerationPatchResult:
     """One greedy generation run with optional early-step activation patches."""
 
@@ -335,6 +367,21 @@ def build_continuation_inputs(
     )
 
 
+def build_generation_step_inputs(
+    prompt_inputs: PromptInputs,
+    prefix_token_ids: Sequence[int],
+) -> ContinuationInputs:
+    """Build the autoregressive context used to predict a chosen generation step."""
+
+    if not prefix_token_ids:
+        return ContinuationInputs(
+            input_ids=prompt_inputs.input_ids,
+            attention_mask=prompt_inputs.attention_mask,
+            final_prompt_token_index=prompt_inputs.final_token_index,
+        )
+    return build_continuation_inputs(prompt_inputs, prefix_token_ids)
+
+
 def resolve_generation_step_window(
     window: int | Sequence[int] | str,
 ) -> tuple[int, ...]:
@@ -541,6 +588,7 @@ def _patch_forward_outputs(
     final_token_index: int,
     layer: int,
     donor_final_token_activation: torch.Tensor,
+    output_hidden_states: bool,
 ) -> Any:
     """Run a forward pass while replacing one token activation at a chosen index."""
 
@@ -579,7 +627,7 @@ def _patch_forward_outputs(
             bundle,
             input_ids,
             attention_mask,
-            output_hidden_states=False,
+            output_hidden_states=output_hidden_states,
         )
     finally:
         handle.remove()
@@ -602,6 +650,7 @@ def patch_final_token_activation(
         final_token_index=prompt_inputs.final_token_index,
         layer=layer,
         donor_final_token_activation=donor_final_token_activation,
+        output_hidden_states=False,
     )
     return get_next_token_logits_from_outputs(outputs)
 
@@ -646,6 +695,7 @@ def score_continuation_sequence(
             final_token_index=continuation_inputs.final_prompt_token_index,
             layer=layer,
             donor_final_token_activation=donor_final_token_activation,
+            output_hidden_states=False,
         )
 
     prompt_length = int(prompt_inputs.input_ids.shape[-1])
@@ -718,6 +768,7 @@ def greedy_generate_with_step_window_patch(
                 final_token_index=int(attention_mask[0].sum().item()) - 1,
                 layer=layer,
                 donor_final_token_activation=donor_activations_by_step[generation_step],
+                output_hidden_states=False,
             )
             next_token_logits = patched_outputs.logits[0, -1, :]
             baseline_top1_token_id = int(torch.argmax(baseline_logits).item())
@@ -748,6 +799,110 @@ def greedy_generate_with_step_window_patch(
         generated_token_ids=tuple(generated_token_ids),
         generated_text=decode_generated_tokens(bundle, generated_token_ids),
         step_diagnostics=tuple(step_diagnostics),
+    )
+
+
+def _top_k_token_candidates(
+    bundle: CodingPatchingBundle,
+    logits: torch.Tensor,
+    *,
+    k: int,
+) -> tuple[TokenCandidate, ...]:
+    """Render a compact top-k view of a next-token distribution."""
+
+    if k <= 0:
+        raise ValueError("k must be positive.")
+    probabilities = torch.softmax(logits.detach().to(dtype=torch.float32), dim=-1)
+    top_probabilities, top_indices = torch.topk(probabilities, k=min(k, probabilities.shape[-1]))
+    candidates: list[TokenCandidate] = []
+    for rank, (probability, token_id_tensor) in enumerate(
+        zip(top_probabilities.tolist(), top_indices.tolist(), strict=False),
+        start=1,
+    ):
+        token_id = int(token_id_tensor)
+        candidates.append(
+            TokenCandidate(
+                rank=rank,
+                token_id=token_id,
+                token_str=token_id_to_string(bundle.tokenizer, token_id),
+                logit=float(logits[token_id].item()),
+                probability=float(probability),
+            )
+        )
+    return tuple(candidates)
+
+
+def debug_generation_step_patch(
+    bundle: CodingPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    target_trace: GenerationTrace,
+    donor_trace: GenerationTrace,
+    generation_step: int,
+    layer: int,
+    top_k: int = 10,
+) -> GenerationStepPatchDebug:
+    """Inspect one generation-step patch with hidden and logit delta diagnostics."""
+
+    if generation_step < 0:
+        raise ValueError("generation_step must be non-negative.")
+    donor_activation = generation_trace_activation_at_step(donor_trace, generation_step)
+    prefix_token_ids = target_trace.generated_token_ids[:generation_step]
+    step_inputs = build_generation_step_inputs(prompt_inputs, prefix_token_ids)
+    final_token_index = int(step_inputs.attention_mask[0].sum().item()) - 1
+
+    baseline_outputs = _forward_inputs(
+        bundle,
+        step_inputs.input_ids,
+        step_inputs.attention_mask,
+        output_hidden_states=True,
+    )
+    patched_outputs = _patch_forward_outputs(
+        bundle,
+        input_ids=step_inputs.input_ids,
+        attention_mask=step_inputs.attention_mask,
+        final_token_index=final_token_index,
+        layer=layer,
+        donor_final_token_activation=donor_activation,
+        output_hidden_states=True,
+    )
+
+    baseline_logits = baseline_outputs.logits[0, -1, :].detach().to(dtype=torch.float32).cpu()
+    patched_logits = patched_outputs.logits[0, -1, :].detach().to(dtype=torch.float32).cpu()
+    baseline_activation = _activation_for_context_step(
+        baseline_outputs,
+        model=bundle.model,
+        layer=layer,
+    ).detach().to(dtype=torch.float32).cpu()
+    patched_activation = _activation_for_context_step(
+        patched_outputs,
+        model=bundle.model,
+        layer=layer,
+    ).detach().to(dtype=torch.float32).cpu()
+    donor_activation_cpu = donor_activation.detach().to(dtype=torch.float32).cpu()
+
+    hidden_delta = patched_activation - baseline_activation
+    donor_target_delta = donor_activation_cpu - baseline_activation
+    logit_delta = patched_logits - baseline_logits
+
+    baseline_top1_token_id = int(torch.argmax(baseline_logits).item())
+    patched_top1_token_id = int(torch.argmax(patched_logits).item())
+    return GenerationStepPatchDebug(
+        generation_step=generation_step,
+        prefix_token_ids=tuple(int(token_id) for token_id in prefix_token_ids),
+        baseline_top1_token_id=baseline_top1_token_id,
+        baseline_top1_token_str=token_id_to_string(bundle.tokenizer, baseline_top1_token_id),
+        patched_top1_token_id=patched_top1_token_id,
+        patched_top1_token_str=token_id_to_string(bundle.tokenizer, patched_top1_token_id),
+        top1_changed=baseline_top1_token_id != patched_top1_token_id,
+        hidden_delta_l2=float(torch.linalg.vector_norm(hidden_delta).item()),
+        hidden_delta_max_abs=float(torch.max(torch.abs(hidden_delta)).item()),
+        donor_target_hidden_delta_l2=float(torch.linalg.vector_norm(donor_target_delta).item()),
+        donor_target_hidden_delta_max_abs=float(torch.max(torch.abs(donor_target_delta)).item()),
+        logit_delta_l2=float(torch.linalg.vector_norm(logit_delta).item()),
+        logit_delta_max_abs=float(torch.max(torch.abs(logit_delta)).item()),
+        baseline_top_tokens=_top_k_token_candidates(bundle, baseline_logits, k=top_k),
+        patched_top_tokens=_top_k_token_candidates(bundle, patched_logits, k=top_k),
     )
 
 

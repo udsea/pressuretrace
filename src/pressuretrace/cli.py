@@ -1137,6 +1137,113 @@ def coding_route_patching_v1_command(
     )
 
 
+@app.command("coding-route-patching-debug-v1")
+def coding_route_patching_debug_v1_command(
+    frozen_root: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--frozen-root",
+        help="Frozen coding root containing manifests, results, and patch pairs.",
+    ),
+    patch_pairs_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--patch-pairs-path",
+        help="Optional explicit coding patch-pairs JSONL path.",
+    ),
+    manifest_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--manifest-path",
+        help="Optional explicit coding paper-slice manifest path.",
+    ),
+    results_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--results-path",
+        help="Optional explicit coding paper-slice results path.",
+    ),
+    output_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output-path",
+        help="Optional explicit debug JSONL output path.",
+    ),
+    summary_txt_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--summary-txt-path",
+        help="Optional explicit debug summary TXT path.",
+    ),
+    model_name: str = typer.Option(
+        CODING_V1_MODEL_NAME,
+        help="Model used for coding patch debugging.",
+    ),
+    thinking_mode: str = typer.Option(
+        CODING_V1_THINKING_MODE,
+        "--thinking-mode",
+        help="Thinking mode for coding patch debugging.",
+    ),
+    pressure_types: str = typer.Option(
+        "neutral_wrong_answer_cue",
+        "--pressure-types",
+        help="Comma-separated pressure types to retain.",
+    ),
+    layer: int = typer.Option(
+        -8,
+        "--layer",
+        help="One layer to debug.",
+    ),
+    position_window: str = typer.Option(
+        "gen_1",
+        "--position-window",
+        help="One generation window to debug.",
+    ),
+    base_task_id: str | None = typer.Option(
+        None,
+        "--base-task-id",
+        help="Optional base task id to debug.",
+    ),
+    pair_index: int = typer.Option(
+        0,
+        "--pair-index",
+        help="Fallback pair index when base_task_id is omitted.",
+    ),
+    top_k: int = typer.Option(
+        10,
+        "--top-k",
+        help="How many next-token candidates to record before/after patch.",
+    ),
+) -> None:
+    """Run one-pair coding patch debugging with hidden/logit diagnostics."""
+
+    from pressuretrace.patching.debug_coding_route_patching import (
+        build_debug_config,
+        run_coding_route_patching_debug,
+    )
+
+    config = build_debug_config(
+        frozen_root=frozen_root,
+        patch_pairs_path=patch_pairs_path,
+        manifest_path=manifest_path,
+        results_path=results_path,
+        output_path=output_path,
+        summary_txt_path=summary_txt_path,
+        model_name=model_name,
+        thinking_mode=thinking_mode,
+        pressure_types=tuple(
+            part.strip() for part in pressure_types.split(",") if part.strip()
+        ),
+        layer=layer,
+        position_window=position_window,
+        base_task_id=base_task_id,
+        pair_index=pair_index,
+        top_k=top_k,
+    )
+    artifacts = run_coding_route_patching_debug(config)
+    console.print(f"patch_debug_results: [bold]{artifacts.output_path}[/bold]")
+    console.print(f"patch_debug_summary: [bold]{artifacts.summary_txt_path}[/bold]")
+    console.print(
+        f"debug_pair: [bold]{artifacts.base_task_id}[/bold] "
+        f"({artifacts.pressure_type}, layer={artifacts.layer}, "
+        f"window={artifacts.position_window})"
+    )
+
+
 @app.command("summarize")
 def summarize_command(
     input_path: Path = typer.Option(  # noqa: B008

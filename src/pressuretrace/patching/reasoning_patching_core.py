@@ -443,6 +443,69 @@ def patch_final_token_activation(
     return _next_token_logits_from_outputs(outputs)
 
 
+def generate_with_patched_activation(
+    bundle: ReasoningPatchingBundle,
+    prompt_inputs: PromptInputs,
+    *,
+    layer: int,
+    donor_final_token_activation: torch.Tensor,
+    max_new_tokens: int = 48,
+) -> str:
+    """Generate from a prompt with the final-prompt-token activation patched at one layer.
+
+    The hook fires once during prompt processing; autoregressive steps are unpatched.
+    """
+
+    resolved_layer = resolve_layer_index(bundle.model, layer)
+    target_module = resolve_decoder_layer_module(bundle.model, resolved_layer)
+    donor_activation = donor_final_token_activation.detach().reshape(-1)
+    hook_fired = [False]
+
+    def _hook(_module: Any, _args: tuple[Any, ...], output: Any) -> Any:
+        if hook_fired[0]:
+            return output
+        hook_fired[0] = True
+        if torch.is_tensor(output):
+            patched = output.clone()
+            patched[:, prompt_inputs.final_token_index, :] = donor_activation.to(
+                device=patched.device,
+                dtype=patched.dtype,
+            )
+            return patched
+        if isinstance(output, tuple):
+            hidden_state = output[0]
+            if not torch.is_tensor(hidden_state):
+                raise TypeError("Expected the decoder block output to contain hidden states.")
+            patched = hidden_state.clone()
+            patched[:, prompt_inputs.final_token_index, :] = donor_activation.to(
+                device=patched.device,
+                dtype=patched.dtype,
+            )
+            return (patched, *output[1:])
+        raise TypeError(
+            "Unsupported decoder block output type for activation patching: "
+            f"{type(output).__name__}."
+        )
+
+    handle = target_module.register_forward_hook(_hook)
+    try:
+        with torch.no_grad():
+            generated_ids = bundle.model.generate(
+                input_ids=prompt_inputs.input_ids,
+                attention_mask=prompt_inputs.attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=bundle.tokenizer.pad_token_id,
+                eos_token_id=bundle.tokenizer.eos_token_id,
+                use_cache=True,
+            )
+    finally:
+        handle.remove()
+
+    new_token_ids = generated_ids[0, prompt_inputs.input_ids.shape[-1]:]
+    return bundle.tokenizer.decode(new_token_ids, skip_special_tokens=True).strip()
+
+
 def score_answer_token_sequence(
     bundle: ReasoningPatchingBundle,
     prompt_inputs: PromptInputs,

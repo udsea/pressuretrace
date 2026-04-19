@@ -126,7 +126,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--manifest-path", type=Path, required=True)
     parser.add_argument("--pressure-type", type=str, default="control")
-    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--limit", type=int, default=229)
     parser.add_argument("--layer", type=int, default=-4)
     parser.add_argument("--model-a", type=str, default="Qwen/Qwen3-14B")
     parser.add_argument("--model-b", type=str, default="google/gemma-3-27b-it")

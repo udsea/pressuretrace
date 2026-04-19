@@ -13,11 +13,13 @@ set -euo pipefail
 #   MODEL_B                       target model id     (default google/gemma-3-27b-it)
 #   MANIFEST_PATH                 manifest with control rows
 #   PRESSURE_TYPE                 which rows to pair  (default control)
-#   LIMIT                         number of prompts   (default 100)
+#   LIMIT                         number of prompts   (default 229)
 #   LAYER                         decoder layer index (default -4)
 #   THINKING_MODE                 off|on|default      (default off)
 #   SOURCE_HIDDEN_STATES_PATH     source frozen probe hidden states
 #   TARGET_HIDDEN_STATES_PATH     target frozen probe hidden states
+#   N_PCA_COMPONENTS              PCA dim before align (default 50)
+#   RIDGE_ALPHA                   comma-separated sweep (default 100,1000,10000,100000)
 #   RUN_TAG                       run tag             (default: date)
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -34,9 +36,11 @@ MODEL_A="${MODEL_A:-Qwen/Qwen3-14B}"
 MODEL_B="${MODEL_B:-google/gemma-3-27b-it}"
 MANIFEST_PATH="${MANIFEST_PATH:-pressuretrace-frozen/reasoning_v2_qwen3_14b_off/data/manifests/reasoning_paper_slice_qwen-qwen3-14b_off.jsonl}"
 PRESSURE_TYPE="${PRESSURE_TYPE:-control}"
-LIMIT="${LIMIT:-100}"
+LIMIT="${LIMIT:-229}"
 LAYER="${LAYER:--4}"
 THINKING_MODE="${THINKING_MODE:-off}"
+N_PCA_COMPONENTS="${N_PCA_COMPONENTS:-50}"
+RIDGE_ALPHA="${RIDGE_ALPHA:-100,1000,10000,100000}"
 SOURCE_HIDDEN_STATES_PATH="${SOURCE_HIDDEN_STATES_PATH:-pressuretrace-frozen/reasoning_v2_qwen3_14b_off/results/reasoning_probe_hidden_states_qwen-qwen3-14b_off.jsonl}"
 TARGET_HIDDEN_STATES_PATH="${TARGET_HIDDEN_STATES_PATH:-pressuretrace-frozen/reasoning_v2_google-gemma-3-27b-it_off/results/reasoning_probe_hidden_states_google-gemma-3-27b-it_off.jsonl}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
@@ -77,6 +81,8 @@ uv run python -m pressuretrace.analysis.cross_model_probe_transfer \
   --source-hidden-states-path "${SOURCE_HIDDEN_STATES_PATH}" \
   --target-hidden-states-path "${TARGET_HIDDEN_STATES_PATH}" \
   --layer "${LAYER}" \
+  --n-pca-components "${N_PCA_COMPONENTS}" \
+  --ridge-alpha "${RIDGE_ALPHA}" \
   --output-path "${TRANSFER_SUMMARY}"
 
 printf '\nCross-model probe transfer summary: %s\n' "${TRANSFER_SUMMARY}"

@@ -21,10 +21,27 @@ def run_factual_benchmark(
     thinking_mode: str = "off",
     limit: int | None = None,
     pressure_types: list[str] | None = None,
+    slice_path: Path | None = None,
 ) -> Path:
-    """Run model on factual manifest and label routes."""
+    """Run model on factual manifest and label routes.
+
+    If slice_path is provided, only base tasks listed in the slice are
+    retained — typically the control-robust slice built from a prior control
+    run of the same model.
+    """
 
     rows = read_jsonl(manifest_path)
+    if slice_path is not None:
+        slice_rows = read_jsonl(slice_path)
+        retained_ids = {str(r["base_task_id"]) for r in slice_rows}
+        rows = [
+            r for r in rows
+            if str(r.get("metadata", {}).get("base_task_id")) in retained_ids
+        ]
+        print(
+            f"Applied slice filter from {slice_path}: "
+            f"{len(rows)} rows retained across {len(retained_ids)} base tasks"
+        )
     if pressure_types:
         rows = [
             r for r in rows
@@ -90,6 +107,7 @@ def main(argv=None):
     parser.add_argument("--thinking-mode", type=str, default="off")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--pressure-types", type=str, default=None)
+    parser.add_argument("--slice-path", type=Path, default=None)
     args = parser.parse_args(argv)
 
     pressure_types = (
@@ -104,6 +122,7 @@ def main(argv=None):
         thinking_mode=args.thinking_mode,
         limit=args.limit,
         pressure_types=pressure_types,
+        slice_path=args.slice_path,
     )
 
 

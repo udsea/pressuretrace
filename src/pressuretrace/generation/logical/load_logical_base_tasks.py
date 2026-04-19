@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 from pressuretrace.types import ReasoningTask
 
 LOGICAL_ANSWER_OPTIONS: tuple[str, ...] = ("(A)", "(B)", "(C)", "(D)", "(E)")
@@ -44,15 +46,28 @@ def load_bbh_logical_tasks(
     return tasks
 
 
-def derive_logical_shortcut_answer(task: ReasoningTask) -> str | None:
-    """Pick the adjacent wrong multiple-choice option as the shortcut.
+def derive_logical_shortcut_answer(
+    task: ReasoningTask,
+    rng: random.Random | None = None,
+) -> str | None:
+    """Pick a wrong multiple-choice option as the shortcut.
 
-    Adjacent = most plausible distractor (next option in sequence).
+    Excludes both the gold answer AND the adjacent option so the shortcut is
+    not the most common distractor, which otherwise inflates the control
+    shortcut rate (models default to the adjacent option when uncertain).
     """
+    r = rng or random.Random(42)
+
     gold = task.reference_answer.strip()
     options = list(LOGICAL_ANSWER_OPTIONS)
     if gold not in options:
         return None
+
     gold_idx = options.index(gold)
-    shortcut_idx = (gold_idx + 1) % len(options)
-    return options[shortcut_idx]
+    adjacent_idx = (gold_idx + 1) % len(options)
+    excluded = {gold_idx, adjacent_idx}
+    remaining = [opt for i, opt in enumerate(options) if i not in excluded]
+
+    if remaining:
+        return r.choice(remaining)
+    return options[adjacent_idx]

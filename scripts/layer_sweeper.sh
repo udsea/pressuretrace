@@ -4,25 +4,27 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Adversarial + generation-patching layer sweep.
 #
-# Attack search and detector robustness run once per model at REF_LAYER
-# (adversarial prompts are layer-agnostic; only the detection/intervention
-# stage is layer-specific). The control pipeline and reasoning generation
-# patching then sweep the LAYERS array.
+# Runs the full adversarial chain at each layer in LAYERS:
+#   attack search -> detector robustness -> control pipeline
+# plus the reasoning generation patching at the same layers.
+# Every stage writes layer-tagged outputs so nothing is overwritten.
 #
 # Environment overrides:
 #   MODEL_NAME      HF model id         (default Qwen/Qwen3-14B)
 #   THINKING_MODE   off|on|default      (default off)
 #   LAYERS          space-separated list of layer indices
 #                   (default "-8 -6 -4 -2")
-#   REF_LAYER       layer used for one-shot upstream stages (default -4)
 #   THRESHOLD       risk-score threshold for intervention (default 50.0)
-#   SKIP_ATTACK     set to 1 to skip stage 1 (use existing attack results)
-#   SKIP_DETECTOR   set to 1 to skip stage 2 (use existing detector results)
+#   SKIP_ATTACK     set to 1 to skip stage 1 at every layer
+#   SKIP_DETECTOR   set to 1 to skip stage 2 at every layer
+#   SKIP_CONTROL    set to 1 to skip stage 3 at every layer
 #   SKIP_GEN_PATCH  set to 1 to skip reasoning generation patching
 #
 # Examples:
 #   MODEL_NAME=Qwen/Qwen3-14B bash scripts/layer_sweeper.sh
 #   MODEL_NAME=google/gemma-3-27b-it bash scripts/layer_sweeper.sh
+#   LAYERS="-4" bash scripts/layer_sweeper.sh       # single layer
+#   SKIP_GEN_PATCH=1 bash scripts/layer_sweeper.sh  # adversarial chain only
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required but was not found on PATH." >&2
@@ -37,54 +39,66 @@ MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-14B}"
 THINKING_MODE="${THINKING_MODE:-off}"
 LAYERS_STR="${LAYERS:--8 -6 -4 -2}"
 read -r -a LAYERS <<< "${LAYERS_STR}"
-REF_LAYER="${REF_LAYER:--4}"
 THRESHOLD="${THRESHOLD:-50.0}"
 SKIP_ATTACK="${SKIP_ATTACK:-0}"
 SKIP_DETECTOR="${SKIP_DETECTOR:-0}"
+SKIP_CONTROL="${SKIP_CONTROL:-0}"
 SKIP_GEN_PATCH="${SKIP_GEN_PATCH:-0}"
 
 SLUG="$(slugify "${MODEL_NAME}")"
-ATTACK_PATH="results/adversarial_attack_search_layer${REF_LAYER}_${SLUG}_${THINKING_MODE}.jsonl"
-DETECTOR_PATH="results/adversarial_detector_robustness_layer${REF_LAYER}_${SLUG}_${THINKING_MODE}.jsonl"
+TAG="${SLUG}_${THINKING_MODE}"
 
 mkdir -p results
 
 printf 'Model:        %s\n' "${MODEL_NAME}"
 printf 'Thinking:     %s\n' "${THINKING_MODE}"
 printf 'Layers:       %s\n' "${LAYERS[*]}"
-printf 'Ref layer:    %s\n' "${REF_LAYER}"
 printf 'Threshold:    %s\n' "${THRESHOLD}"
-printf 'Attack out:   %s\n' "${ATTACK_PATH}"
-printf 'Detector out: %s\n' "${DETECTOR_PATH}"
 
-if [[ "${SKIP_ATTACK}" != "1" ]]; then
-  printf '\n=== Stage 1: attack search (layer=%s) ===\n' "${REF_LAYER}"
-  uv run python -m pressuretrace.adversarial.run_attack_search \
-    --layer "${REF_LAYER}" \
-    --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
-    --output-path "${ATTACK_PATH}"
-else
-  printf '\n=== Stage 1: skipped (using %s) ===\n' "${ATTACK_PATH}"
-fi
-
-if [[ "${SKIP_DETECTOR}" != "1" ]]; then
-  printf '\n=== Stage 2: detector robustness (layer=%s) ===\n' "${REF_LAYER}"
-  uv run python -m pressuretrace.adversarial.run_detector_robustness \
-    --layer "${REF_LAYER}" \
-    --attack-results-path "${ATTACK_PATH}" \
-    --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
-    --output-path "${DETECTOR_PATH}"
-else
-  printf '\n=== Stage 2: skipped (using %s) ===\n' "${DETECTOR_PATH}"
-fi
+attack_path_for()    { echo "results/adversarial_attack_search_layer${1}_${TAG}.jsonl"; }
+detector_path_for()  { echo "results/adversarial_detector_robustness_layer${1}_${TAG}.jsonl"; }
+control_path_for()   { echo "results/adversarial_control_pipeline_layer${1}_${TAG}.jsonl"; }
+gen_patch_path_for() { echo "results/reasoning_generation_patching_layer${1}_${TAG}.jsonl"; }
+gen_patch_sum_for()  { echo "results/reasoning_generation_patching_layer${1}_summary_${TAG}.json"; }
 
 for L in "${LAYERS[@]}"; do
-  printf '\n=== Stage 3: control pipeline layer=%s ===\n' "${L}"
-  uv run python -m pressuretrace.adversarial.run_control_pipeline \
-    --layer "${L}" --threshold "${THRESHOLD}" \
-    --adversarial-results-path "${DETECTOR_PATH}" \
-    --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
-    --output-path "results/adversarial_control_pipeline_layer${L}_${SLUG}_${THINKING_MODE}.jsonl"
+  ATTACK_PATH="$(attack_path_for "${L}")"
+  DETECTOR_PATH="$(detector_path_for "${L}")"
+  CONTROL_PATH="$(control_path_for "${L}")"
+
+  printf '\n########## LAYER %s ##########\n' "${L}"
+
+  if [[ "${SKIP_ATTACK}" != "1" ]]; then
+    printf '\n=== Stage 1: attack search (layer=%s) ===\n' "${L}"
+    uv run python -m pressuretrace.adversarial.run_attack_search \
+      --layer "${L}" \
+      --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
+      --output-path "${ATTACK_PATH}"
+  else
+    printf '\n=== Stage 1: skipped (expecting %s) ===\n' "${ATTACK_PATH}"
+  fi
+
+  if [[ "${SKIP_DETECTOR}" != "1" ]]; then
+    printf '\n=== Stage 2: detector robustness (layer=%s) ===\n' "${L}"
+    uv run python -m pressuretrace.adversarial.run_detector_robustness \
+      --layer "${L}" \
+      --attack-results-path "${ATTACK_PATH}" \
+      --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
+      --output-path "${DETECTOR_PATH}"
+  else
+    printf '\n=== Stage 2: skipped (expecting %s) ===\n' "${DETECTOR_PATH}"
+  fi
+
+  if [[ "${SKIP_CONTROL}" != "1" ]]; then
+    printf '\n=== Stage 3: control pipeline (layer=%s) ===\n' "${L}"
+    uv run python -m pressuretrace.adversarial.run_control_pipeline \
+      --layer "${L}" --threshold "${THRESHOLD}" \
+      --adversarial-results-path "${DETECTOR_PATH}" \
+      --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
+      --output-path "${CONTROL_PATH}"
+  else
+    printf '\n=== Stage 3: skipped (would write %s) ===\n' "${CONTROL_PATH}"
+  fi
 done
 
 if [[ "${SKIP_GEN_PATCH}" != "1" ]]; then
@@ -93,11 +107,11 @@ if [[ "${SKIP_GEN_PATCH}" != "1" ]]; then
     uv run python -m pressuretrace.patching.run_reasoning_generation_patching \
       --layer "${L}" \
       --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
-      --output-path "results/reasoning_generation_patching_layer${L}_${SLUG}_${THINKING_MODE}.jsonl" \
-      --summary-path "results/reasoning_generation_patching_layer${L}_summary_${SLUG}_${THINKING_MODE}.json"
+      --output-path "$(gen_patch_path_for "${L}")" \
+      --summary-path "$(gen_patch_sum_for "${L}")"
   done
 fi
 
 printf '\nSummaries:\n'
-ls -1 results/adversarial_control_pipeline_layer*_"${SLUG}"_"${THINKING_MODE}"_summary.json 2>/dev/null || true
-ls -1 results/reasoning_generation_patching_layer*_summary_"${SLUG}"_"${THINKING_MODE}".json 2>/dev/null || true
+ls -1 results/adversarial_control_pipeline_layer*_"${TAG}"_summary.json 2>/dev/null || true
+ls -1 results/reasoning_generation_patching_layer*_summary_"${TAG}".json 2>/dev/null || true

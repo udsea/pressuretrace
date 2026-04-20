@@ -146,16 +146,23 @@ def _row_is_eligible(
 ) -> bool:
     """Return whether a frozen result row should be probed."""
 
-    if str(result_row.get("family")) != REASONING_PROBE_FAMILY:
+    if str(result_row.get("family", "")).strip() != REASONING_PROBE_FAMILY:
         return False
-    if str(result_row.get("pressure_type")) not in ELIGIBLE_PRESSURE_TYPES:
+    if str(result_row.get("pressure_type", "")).strip() not in ELIGIBLE_PRESSURE_TYPES:
         return False
-    if str(result_row.get("route_label")) not in ELIGIBLE_ROUTE_LABELS:
+    if str(result_row.get("route_label", "")).strip() not in ELIGIBLE_ROUTE_LABELS:
         return False
-    if str(result_row.get("model_name")) != model_name:
-        return False
-    if str(result_row.get("thinking_mode")) != thinking_mode:
-        return False
+
+    row_model_name = result_row.get("model_name")
+    if row_model_name is not None and str(row_model_name).strip():
+        if str(row_model_name).strip() != str(model_name).strip():
+            return False
+
+    row_thinking_mode = result_row.get("thinking_mode")
+    if row_thinking_mode is not None and str(row_thinking_mode).strip():
+        if str(row_thinking_mode).strip() != str(thinking_mode).strip():
+            return False
+
     return True
 
 
@@ -172,13 +179,43 @@ def select_reasoning_probe_rows(
     selected_rows: list[dict[str, Any]] = []
     missing_manifest_task_ids: list[str] = []
 
+    total_rows = 0
+    family_ok = 0
+    pressure_ok = 0
+    route_ok = 0
+    model_ok = 0
+    thinking_ok = 0
+
     for result_row in result_rows:
-        if not _row_is_eligible(
-            result_row,
-            model_name=model_name,
-            thinking_mode=thinking_mode,
-        ):
+        total_rows += 1
+
+        family = str(result_row.get("family", "")).strip()
+        if family != REASONING_PROBE_FAMILY:
             continue
+        family_ok += 1
+
+        pressure_type = str(result_row.get("pressure_type", "")).strip()
+        if pressure_type not in ELIGIBLE_PRESSURE_TYPES:
+            continue
+        pressure_ok += 1
+
+        route_label = str(result_row.get("route_label", "")).strip()
+        if route_label not in ELIGIBLE_ROUTE_LABELS:
+            continue
+        route_ok += 1
+
+        row_model_name = result_row.get("model_name")
+        if row_model_name is not None and str(row_model_name).strip():
+            if str(row_model_name).strip() != str(model_name).strip():
+                continue
+        model_ok += 1
+
+        row_thinking_mode = result_row.get("thinking_mode")
+        if row_thinking_mode is not None and str(row_thinking_mode).strip():
+            if str(row_thinking_mode).strip() != str(thinking_mode).strip():
+                continue
+        thinking_ok += 1
+
         task_id = str(result_row.get("task_id"))
         manifest_row = manifest_by_task_id.get(task_id)
         if manifest_row is None:
@@ -188,11 +225,24 @@ def select_reasoning_probe_rows(
         prompt = _select_prompt(manifest_row, dict(result_row))
         merged_metadata = dict(manifest_row.get("metadata", {}))
         merged_metadata.update(dict(result_row.get("metadata", {})))
+
         merged_row = dict(manifest_row)
         merged_row.update(dict(result_row))
         merged_row["prompt"] = prompt
         merged_row["metadata"] = merged_metadata
         selected_rows.append(merged_row)
+
+    print(
+        "select_reasoning_probe_rows: "
+        f"total={total_rows}, "
+        f"family_ok={family_ok}, "
+        f"pressure_ok={pressure_ok}, "
+        f"route_ok={route_ok}, "
+        f"model_ok={model_ok}, "
+        f"thinking_ok={thinking_ok}, "
+        f"selected={len(selected_rows)}",
+        flush=True,
+    )
 
     if missing_manifest_task_ids:
         sample = ", ".join(sorted(missing_manifest_task_ids)[:5])
@@ -388,9 +438,8 @@ def extract_reasoning_hidden_states(
                     }
                     append_jsonl(output_path, output_row)
                     rows_written += 1
-            if (
-                config.progress_every > 0
-                and (index % config.progress_every == 0 or index == eligible_count)
+            if config.progress_every > 0 and (
+                index % config.progress_every == 0 or index == eligible_count
             ):
                 elapsed_minutes = (time.perf_counter() - started_at) / 60
                 print(

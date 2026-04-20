@@ -1,0 +1,22 @@
+{
+  "model": "Qwen/Qwen3-14B",
+  "layer": -2,
+  "total_pairs": 272,
+  "shortcut_baseline_count": 267,
+  "rescued_count": 174,
+  "rescue_rate": 0.651685393258427,
+  "by_pressure_type": {
+    "neutral_wrong_answer_cue": {
+      "total": 146,
+      "shortcut_baseline": 142,
+      "rescued": 92,
+      "rescue_rate": 0.647887323943662
+    },
+    "teacher_anchor": {
+      "total": 126,
+      "shortcut_baseline": 125,
+      "rescued": 82,
+      "rescue_rate": 0.656
+    }
+  }
+}

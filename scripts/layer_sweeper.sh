@@ -19,6 +19,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #   SKIP_DETECTOR   set to 1 to skip stage 2 at every layer
 #   SKIP_CONTROL    set to 1 to skip stage 3 at every layer
 #   SKIP_GEN_PATCH  set to 1 to skip reasoning generation patching
+#   HIDDEN_STATES_PATH   override probe hidden states file (model-specific)
+#   MANIFEST_PATH        override reasoning manifest (model-specific)
+#
+# Paths default to the per-model frozen artefacts under pressuretrace-frozen/.
 #
 # Examples:
 #   MODEL_NAME=Qwen/Qwen3-14B bash scripts/layer_sweeper.sh
@@ -48,12 +52,35 @@ SKIP_GEN_PATCH="${SKIP_GEN_PATCH:-0}"
 SLUG="$(slugify "${MODEL_NAME}")"
 TAG="${SLUG}_${THINKING_MODE}"
 
+case "${SLUG}" in
+  qwen-qwen3-14b)
+    FROZEN_DIR="pressuretrace-frozen/reasoning_v2_qwen3_14b_off"
+    ;;
+  *)
+    FROZEN_DIR="pressuretrace-frozen/reasoning_v2_${SLUG}_${THINKING_MODE}"
+    ;;
+esac
+DEFAULT_HIDDEN_STATES_PATH="${FROZEN_DIR}/results/reasoning_probe_hidden_states_${SLUG}_${THINKING_MODE}.jsonl"
+DEFAULT_MANIFEST_PATH="${FROZEN_DIR}/data/manifests/reasoning_paper_slice_${SLUG}_${THINKING_MODE}.jsonl"
+HIDDEN_STATES_PATH="${HIDDEN_STATES_PATH:-${DEFAULT_HIDDEN_STATES_PATH}}"
+MANIFEST_PATH="${MANIFEST_PATH:-${DEFAULT_MANIFEST_PATH}}"
+
+for required_file in "${HIDDEN_STATES_PATH}" "${MANIFEST_PATH}"; do
+  if [[ ! -f "${required_file}" ]]; then
+    echo "Missing required file: ${required_file}" >&2
+    echo "Override with HIDDEN_STATES_PATH / MANIFEST_PATH env vars if the path differs." >&2
+    exit 1
+  fi
+done
+
 mkdir -p results
 
-printf 'Model:        %s\n' "${MODEL_NAME}"
-printf 'Thinking:     %s\n' "${THINKING_MODE}"
-printf 'Layers:       %s\n' "${LAYERS[*]}"
-printf 'Threshold:    %s\n' "${THRESHOLD}"
+printf 'Model:         %s\n' "${MODEL_NAME}"
+printf 'Thinking:      %s\n' "${THINKING_MODE}"
+printf 'Layers:        %s\n' "${LAYERS[*]}"
+printf 'Threshold:     %s\n' "${THRESHOLD}"
+printf 'Hidden states: %s\n' "${HIDDEN_STATES_PATH}"
+printf 'Manifest:      %s\n' "${MANIFEST_PATH}"
 
 attack_path_for()    { echo "results/adversarial_attack_search_layer${1}_${TAG}.jsonl"; }
 detector_path_for()  { echo "results/adversarial_detector_robustness_layer${1}_${TAG}.jsonl"; }
@@ -73,6 +100,8 @@ for L in "${LAYERS[@]}"; do
     uv run python -m pressuretrace.adversarial.run_attack_search \
       --layer "${L}" \
       --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
+      --manifest-path "${MANIFEST_PATH}" \
+      --hidden-states-path "${HIDDEN_STATES_PATH}" \
       --output-path "${ATTACK_PATH}"
   else
     printf '\n=== Stage 1: skipped (expecting %s) ===\n' "${ATTACK_PATH}"
@@ -83,6 +112,7 @@ for L in "${LAYERS[@]}"; do
     uv run python -m pressuretrace.adversarial.run_detector_robustness \
       --layer "${L}" \
       --attack-results-path "${ATTACK_PATH}" \
+      --hidden-states-path "${HIDDEN_STATES_PATH}" \
       --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
       --output-path "${DETECTOR_PATH}"
   else
@@ -94,6 +124,8 @@ for L in "${LAYERS[@]}"; do
     uv run python -m pressuretrace.adversarial.run_control_pipeline \
       --layer "${L}" --threshold "${THRESHOLD}" \
       --adversarial-results-path "${DETECTOR_PATH}" \
+      --static-hidden-states-path "${HIDDEN_STATES_PATH}" \
+      --control-prompts-path "${MANIFEST_PATH}" \
       --model-name "${MODEL_NAME}" --thinking-mode "${THINKING_MODE}" \
       --output-path "${CONTROL_PATH}"
   else
